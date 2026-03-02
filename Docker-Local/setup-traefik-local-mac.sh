@@ -237,7 +237,7 @@ version: "3"
 
 services:
   traefik:
-    image: traefik:v2.10
+    image: traefik:v3.6.9
     command:
       - "--api.insecure=true"
       - "--providers.docker=true"
@@ -268,7 +268,7 @@ version: "3"
 
 services:
   traefik:
-    image: traefik:v2.10
+    image: traefik:v3.6.9
     command:
       - "--api.insecure=true"
       - "--providers.docker=true"
@@ -305,7 +305,7 @@ version: "3"
 
 services:
   traefik:
-    image: traefik:v2.10
+    image: traefik:v3.6.9
     command:
       - "--api.insecure=true"
       - "--providers.docker=true"
