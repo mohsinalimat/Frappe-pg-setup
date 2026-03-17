@@ -66,11 +66,13 @@ generate_docker_compose() {
     local pip_install_list=""
     local app_install_cmds=""
 
-    # Postgres: always include frappe_pg
+    # Postgres: clone frappe_pg source ONLY — do NOT pip install yet.
+    # frappe_pg must be pip-installed AFTER bench new-site so its SQL patches
+    # don't interfere with the initial frappe schema creation.
     if [[ "$db_type" == "postgres" ]]; then
-        app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && bench get-app frappe_pg https://github.com/excel-azmin/frappe_pg.git || true
+        app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && git clone https://github.com/excel-azmin/frappe_pg.git apps/frappe_pg || true
 '
-        pip_install_list+=" apps/frappe_pg"
+        # intentionally NOT added to pip_install_list
     fi
 
     for token in $selected_apps; do
@@ -220,6 +222,22 @@ ${app_labels}
         ./env/bin/python -m pip install -q "pydantic~=2.10.2" "PyJWT~=2.8.0"
         pip3 install -q supervisor
         mkdir -p /home/frappe/supervisor/logs
+        echo "Waiting for site ${site_name} to be ready..."
+        until [ -f "sites/${site_name}/site_config.json" ]; do
+          echo "  Site not ready yet, retrying in 15s..."
+          sleep 15
+        done
+        echo "Site is ready. Installing app packages into env..."
+        for app_dir in apps/*/; do
+          app_name=\$\$(basename "\$\$app_dir")
+          if [ "\$\$app_name" != "frappe" ] && [ "\$\$app_name" != "erpnext" ]; then
+            if [ -f "\$\${app_dir}setup.py" ] || [ -f "\$\${app_dir}pyproject.toml" ]; then
+              echo "  pip install -e \$\$app_name"
+              ./env/bin/pip install -q -e "\$\${app_dir}" || true
+            fi
+          fi
+        done
+        echo "All app packages installed. Starting supervisor..."
         cat > /home/frappe/supervisor/supervisord.conf << 'SUPERVISOR_EOF'
         [supervisord]
         nodaemon=true
@@ -288,20 +306,27 @@ EOF
         bench set-config -g redis_socketio "redis://redis:6379"
         bench set-config -gp socketio_port 9000
 ${app_download_cmds}${pip_install_cmd}
+        sed -i 's/return frappe\.database\.database\.Database\.sql(self, pg_query, pg_values,/pg_query = pg_query.replace("%", "%%") if not pg_values else pg_query\n        return frappe.database.database.Database.sql(self, pg_query, pg_values,/' apps/frappe_pg/frappe_pg/postgres/database_patches.py 2>/dev/null || true
         if [ ! -d "sites/${site_name}" ]; then
-          echo "Creating new site with PostgreSQL..."
+          echo "Creating new site with PostgreSQL (frappe_pg not active yet)..."
           bench new-site ${site_name} \\
             --db-type postgres --db-host ${db_host} --db-port ${db_port} \\
             --db-root-username ${pg_root_user} --db-root-password ${pg_root_password} \\
             --admin-password admin
           echo "${site_name}" > sites/currentsite.txt
+          echo "Site created cleanly. Now activating frappe_pg..."
+          grep -qxF "frappe_pg" sites/apps.txt 2>/dev/null || printf "\nfrappe_pg\n" >> sites/apps.txt
+          ./env/bin/pip install -q -e apps/frappe_pg
           bench --site ${site_name} install-app frappe_pg || true
           bench --site ${site_name} execute frappe_pg.install_db_functions.install || true
+          echo "Installing erpnext with frappe_pg active..."
           bench --site ${site_name} install-app erpnext
 ${app_install_cmds}          bench build
           bench --site ${site_name} migrate
         else
-          echo "Site ${site_name} already exists, skipping creation"
+          echo "Site ${site_name} already exists. Ensuring frappe_pg is installed in env..."
+          grep -qxF "frappe_pg" sites/apps.txt 2>/dev/null || printf "\nfrappe_pg\n" >> sites/apps.txt
+          ./env/bin/pip install -q -e apps/frappe_pg
         fi
 EOF
     else
