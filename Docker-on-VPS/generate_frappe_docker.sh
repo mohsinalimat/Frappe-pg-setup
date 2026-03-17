@@ -306,7 +306,20 @@ EOF
         bench set-config -g redis_socketio "redis://redis:6379"
         bench set-config -gp socketio_port 9000
 ${app_download_cmds}${pip_install_cmd}
-        sed -i 's/return frappe\.database\.database\.Database\.sql(self, pg_query, pg_values,/pg_query = pg_query.replace("%", "%%") if not pg_values else pg_query\n        return frappe.database.database.Database.sql(self, pg_query, pg_values,/' apps/frappe_pg/frappe_pg/postgres/database_patches.py 2>/dev/null || true
+        cat > /tmp/patch_frappe_pg.py << 'PYEOF'
+        path = 'apps/frappe_pg/frappe_pg/postgres/database_patches.py'
+        lines = open(path).readlines()
+        result = []
+        for line in lines:
+            s = line.lstrip()
+            if s.startswith('return frappe.database.database.Database.sql(self, pg_query, pg_values'):
+                indent = line[:len(line) - len(s)]
+                result.append(indent + 'pg_query = pg_query.replace("%", "%%") if not pg_values else pg_query\n')
+            result.append(line)
+        open(path, 'w').writelines(result)
+        print('frappe_pg patched')
+        PYEOF
+        python3 /tmp/patch_frappe_pg.py 2>/dev/null || true
         if [ ! -d "sites/${site_name}" ]; then
           echo "Creating new site with PostgreSQL (frappe_pg not active yet)..."
           bench new-site ${site_name} \\
