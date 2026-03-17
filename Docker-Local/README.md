@@ -1,318 +1,410 @@
-# Docker-Local: Frappe/ERPNext Local Development Setup
+# Docker-Local: Frappe / ERPNext Local Development Setup
 
-This folder contains optimized Docker tools for running Frappe/ERPNext locally with minimal resource usage and simplified management.
-
-## 🚀 Quick Start
-
-### 🍎 **Mac Users (Recommended)**
-```bash
-# Option 1: No sudo required (RECOMMENDED for Mac)
-# 1. Setup Traefik Local (Mac optimized, no sudo)
-./setup-traefik-local-mac-no-sudo.sh
-
-# 2. Generate a new Frappe site
-./generate_frappe_docker_local.sh
-
-# 3. Manage your containers
-./docker-manager-local.sh
-
-# Option 2: With sudo (if you prefer)
-# 1. Setup Traefik Local (Mac optimized, with sudo)
-sudo ./setup-traefik-local-mac.sh
-
-# 2. Generate a new Frappe site
-sudo ./generate_frappe_docker_local.sh
-
-# 3. Manage your containers
-sudo ./docker-manager-local.sh
-```
-
-### 🐧 **Linux Users**
-```bash
-# 1. Setup Traefik Local
-cd ../
-sudo ./setup-traefik-local.sh
-
-# 2. Generate a new Frappe site
-sudo ./generate_frappe_docker_local.sh
-
-# 3. Manage your containers
-sudo ./docker-manager-local.sh
-```
-
-## 📁 Folder Structure
-
-```
-Docker-Local/
-├── generate_frappe_docker_local.sh    # Main site generation script
-├── docker-manager-local.sh            # Container management tool
-├── setup-traefik-local-mac-no-sudo.sh # Mac-optimized Traefik setup (no sudo)
-├── setup-traefik-local-mac.sh        # Mac-optimized Traefik setup (with sudo)
-├── setup-traefik-local.sh             # Linux Traefik setup
-├── traefik-docker-compose.yml        # Local Traefik configuration
-├── .traefik-local-config             # Local port configuration
-├── helper-screenshot/                 # Documentation screenshots
-├── MAC_COMPATIBILITY.md              # Mac-specific setup guide
-```
-
-## 🛠️ Main Tools
-
-### 1. generate_frappe_docker_local.sh
-
-**Purpose**: Creates optimized Frappe/ERPNext Docker containers with minimal resource usage.
-
-**Key Features**:
-- **Optimized Architecture**: Only 4 containers instead of 9
-- **Supervisor Integration**: All Frappe processes run in one container
-- **Local Port Support**: Automatically detects custom Traefik ports
-- **Hosts File Management**: Auto-adds domains to `/etc/hosts`
-- **Smart Port Detection**: Shows correct URLs with custom ports
-
-**Usage**:
-```bash
-sudo ./generate_frappe_docker_local.sh
-```
-
-**What it does**:
-1. Checks Docker and Traefik status
-2. Prompts for site name (e.g., `demo.local`, `mysite.localhost`)
-3. Creates optimized `docker-compose.yml`
-4. Starts containers with Supervisor-managed processes
-5. Manages hosts file entries
-6. Shows access information with correct ports
-
-**Screenshot**: ![Run Generate Frappe Docker Local](helper-screenshot/run_generate_frappe_docker_local.png)
-
-### 2. docker-manager-local.sh
-
-**Purpose**: Comprehensive container management tool for local Frappe/ERPNext sites.
-
-**Key Features**:
-- **Container Status**: View all running containers
-- **Process Management**: Manage Frappe processes via Supervisor
-- **Container Access**: Access containers as frappe user or root
-- **Log Management**: View and manage container logs
-- **Site Operations**: Start, stop, restart, and remove sites
-- **Package Installation**: Install packages in containers
-- **Network Management**: Manage Docker networks
-
-**Usage**:
-```bash
-sudo ./docker-manager-local.sh
-```
-
-**Main Menu Options**:
-1. **Show running containers** - Display all active Frappe containers
-2. **Access container shell (normal user)** - Interactive shell as frappe user
-3. **Access container shell (root user)** - Interactive shell as root user
-4. **Manage Frappe processes** - Start/stop/restart Supervisor processes
-5. **View logs** - Monitor container and application logs
-6. **Manage containers** - Start, stop, restart, and remove containers
-7. **Show site information** - Display detailed site configuration
-8. **Access specific container as root** - Root access to any container
-9. **File Transfer** - Transfer files between host and containers
-10. **Install Packages** - Add software packages to containers
-11. **Exit** - Close the docker manager
-
-**Detailed Menu Functions**:
-
-- **Option 1**: Lists all running Frappe containers with status and port information
-- **Option 2**: Opens bash shell as frappe user (recommended for most operations)
-- **Option 3**: Opens bash shell as root user (for system-level changes)
-- **Option 4**: Manages Frappe processes via Supervisor (start/stop/restart)
-- **Option 5**: Displays real-time logs from containers and applications
-- **Option 6**: Container lifecycle management (start, stop, restart, remove)
-- **Option 7**: Shows detailed configuration and status of Frappe sites
-- **Option 8**: Provides root access to any specific container by name
-- **Option 9**: Enables file transfer between host system and containers
-- **Option 10**: Installs software packages inside containers
-- **Option 11**: Safely exits the docker manager
-
-**Screenshots**:
-- ![Access Docker Manager](helper-screenshot/access_the_docker-manager.png)
-- ![View and Access Containers](helper-screenshot/view_and_access_containers.png)
-- ![Install Nano Package](helper-screenshot/install_nano_package_on_container.png)
-
-## 🔧 Configuration
-
-### Local Traefik Configuration
-
-The `.traefik-local-config` file contains:
-```bash
-TRAEFIK_HTTP_PORT=8081      # Custom HTTP port
-USE_LOCALHOST=true          # Use localhost domains
-```
-
-**Port Detection**: The scripts automatically detect and use custom ports from this configuration.
-
-### Site Configuration
-
-Each generated site includes:
-- **App Container**: Runs all Frappe processes via Supervisor
-- **Database**: MariaDB 10.6
-- **Redis**: Handles cache, queue, and socketio
-- **Create-site**: Temporary container for initial setup
-
-## 📊 Optimized Architecture
-
-**Traditional Setup**: 9 containers
-**Local Optimized**: 4 containers
-
-**Benefits**:
-- ⚡ **Faster startup** times
-- 💾 **Lower memory** usage
-- 🔧 **Easier management** with Supervisor
-- 🌐 **Simplified networking**
-- 📝 **Better logging** and process control
-
-## 🚦 Process Management
-
-### Supervisor Commands
-
-Access container and manage processes:
-```bash
-# Check status
-sudo docker exec SITE_NAME-app /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf status
-
-# Restart web process
-sudo docker exec SITE_NAME-app /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf restart frappe-web
-
-# Restart all processes
-sudo docker exec SITE_NAME-app /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf restart all
-```
-
-### Available Processes
-- `frappe-web` - Web server (port 8000)
-- `frappe-schedule` - Background scheduler
-- `frappe-worker-short` - Short queue worker
-- `frappe-worker-long` - Long queue worker
-- `frappe-worker-default` - Default queue worker
-- `frappe-websocket` - WebSocket server (port 9000)
-
-## 🌐 Access Information
-
-### Default Credentials
-- **Username**: `Administrator`
-- **Password**: `admin`
-
-### Access URLs
-- **Custom Port**: `http://yourdomain.local:8081`
-- **Default Port**: `http://yourdomain.local`
-
-### Port Detection
-The scripts automatically detect your local Traefik configuration and show the correct access URLs with custom ports.
-
-## 📋 Common Operations
-
-### Create a New Site
-```bash
-sudo ./generate_frappe_docker_local.sh
-# Follow prompts for site name
-```
-
-### Manage Existing Sites
-```bash
-sudo ./docker-manager-local.sh
-# Use menu options to manage containers
-```
-
-### Access Container
-```bash
-# Via docker-manager-local.sh (recommended)
-sudo ./docker-manager-local.sh
-
-# Direct access
-sudo docker exec -it SITE_NAME-app bash
-```
-
-### View Logs
-```bash
-# Via docker-manager-local.sh
-sudo ./docker-manager-local.sh
-
-# Direct access
-sudo docker exec SITE_NAME-app tail -f /home/frappe/supervisor/logs/frappe-web.log
-```
-
-## 🚨 Troubleshooting
-
-### Port Conflicts
-If ports 80/443 are in use:
-```bash
-cd ../
-sudo ./setup-traefik-local.sh
-```
-
-### Container Issues
-1. Check container status: `sudo docker ps -a`
-2. View logs: `sudo docker logs SITE_NAME-app`
-3. Restart processes via Supervisor
-4. Use docker-manager-local.sh for comprehensive management
-
-### Hosts File Issues
-```bash
-# Check hosts file
-cat /etc/hosts
-
-# Remove domain manually
-sudo sed -i '/yourdomain.local/d' /etc/hosts
-```
-
-## 🍎 **Mac Compatibility**
-
-### **Mac-Specific Benefits**
-- ✅ **Native .localhost Support**: .localhost domains work without /etc/hosts modification
-- ✅ **Port 8081 Default**: Automatically uses port 8081 to avoid macOS system port conflicts
-- ✅ **Docker Desktop Optimized**: Better performance on macOS
-- ✅ **Smart Port Detection**: Handles common Mac port usage patterns
-- ✅ **System Service Awareness**: Recognizes macOS system services using port 80
-
-### **Mac Setup Commands**
-```bash
-# Option 1: No sudo required (RECOMMENDED)
-./setup-traefik-local-mac-no-sudo.sh
-./generate_frappe_docker_local.sh
-./docker-manager-local.sh
-
-# Option 2: With sudo (if you prefer)
-sudo ./setup-traefik-local-mac.sh
-sudo ./generate_frappe_docker_local.sh
-sudo ./docker-manager-local.sh
-```
-
-### **Mac Access URLs**
-- **Site Access**: `http://yoursite.localhost:8081`
-- **Traefik Dashboard**: `http://localhost:8080`
-- **No hosts file editing required** on macOS
-
-📚 **[Complete Mac Guide](MAC_COMPATIBILITY.md)**
-
-## 🔒 Security Notes
-
-- **Local Development Only**: These tools are designed for local development
-- **No SSL**: HTTP-only setup for simplicity
-- **Default Passwords**: Change default passwords in production
-- **Network Isolation**: Uses bridge networks for container isolation
-
-## 📚 Additional Resources
-
-- **Main Documentation**: `../README.md`
-- **Traefik Setup**: `../setup-traefik-local.sh`
-- **Mac Users**: `MAC_COMPATIBILITY.md` - Mac-specific setup and troubleshooting
-- **Docker Manager**: `../docker-manager.sh`
-- **Security Tools**: `../docker-security-tools.sh`
-
-## 🤝 Contributing
-
-1. Test changes in local environment
-2. Update screenshots if UI changes
-3. Maintain backward compatibility
-4. Document new features
-
-## 📄 License
-
-This project follows the same license as the main repository.
+Run a full ERPNext site on your own computer for development, testing, or learning — no internet domain required.
 
 ---
 
-**💡 Pro Tip**: Use `docker-manager-local.sh` for most container operations - it provides a user-friendly interface and handles complex operations automatically.
+## Before You Start — Prerequisites
+
+| Requirement | How to check |
+|-------------|-------------|
+| Docker Desktop | `docker --version` |
+| Docker Compose | `docker compose version` |
+| Bash shell | Built-in on Mac / Linux |
+
+> **Mac users**: Make sure Docker Desktop is open and running before you begin.
+
+---
+
+## Quick Start
+
+### Mac Users (Recommended — no sudo needed)
+
+```bash
+# Step 1: Start the local reverse proxy (Traefik)
+./setup-traefik-local-mac-no-sudo.sh
+
+# Step 2: Create your ERPNext site (follow the prompts)
+./generate_frappe_docker_local.sh
+
+# Step 3: Manage your site anytime
+./docker-manager-local.sh
+```
+
+### Mac Users (with sudo)
+
+```bash
+sudo ./setup-traefik-local-mac.sh
+sudo ./generate_frappe_docker_local.sh
+sudo ./docker-manager-local.sh
+```
+
+### Linux Users
+
+```bash
+sudo ./setup-traefik-local.sh
+sudo ./generate_frappe_docker_local.sh
+sudo ./docker-manager-local.sh
+```
+
+---
+
+## Step-by-Step: What Happens During Setup
+
+When you run `generate_frappe_docker_local.sh`, the script will ask you a series of questions. Here is what each one means:
+
+---
+
+### Question 1 — Database Type
+
+```
+Use PostgreSQL instead of MariaDB? (y/n, default: n):
+```
+
+| Choice | What it means |
+|--------|--------------|
+| `n` (default) | Use **MariaDB 10.6** — the standard Frappe database. Recommended for all users. |
+| `y` | Use **PostgreSQL 14** — only if you specifically need it. |
+
+> **Beginners: press Enter** to use MariaDB (the default).
+
+If you choose PostgreSQL, you will also be asked:
+- External host or containerized? — choose `n` (containerized) unless you already have a PostgreSQL server running
+- PostgreSQL superuser username (default: `frappe_root`)
+- PostgreSQL superuser password
+
+---
+
+### Question 2 — Site Name
+
+```
+Enter site name (e.g. demo.local, mysite.localhost):
+```
+
+This is the address you will use in your browser to access ERPNext.
+
+| Recommended format | Example URL |
+|--------------------|-------------|
+| `yourname.localhost` | `http://yourname.localhost:8081` |
+| `yourname.local` | `http://yourname.local:8081` |
+
+> **Mac tip**: Use `.localhost` — it works automatically with no extra setup.
+> **Linux tip**: Use `.local` — the script will add it to `/etc/hosts` for you.
+
+---
+
+### Question 3 — Install UI Theme?
+
+```
+Install UI Theme? (y/n):
+```
+
+A custom color/branding theme for ERPNext. Choose `y` to install it, `n` to skip.
+
+---
+
+### Question 4 — Install HRMS?
+
+```
+Install HRMS (HR & Payroll)? (y/n):
+```
+
+The **HR & Payroll** module for managing employees, attendance, payroll, and leave.
+
+> Note: Installing HRMS takes extra time as it runs additional database migrations.
+
+---
+
+### Question 5 — Install Raven?
+
+```
+Install Raven (Chat)? (y/n):
+```
+
+A team **chat / messaging** app built for ERPNext.
+
+---
+
+### Question 6 — Custom App?
+
+```
+Add a custom app? (y/n):
+```
+
+If you have your own Frappe app hosted on GitHub or another git server, you can install it here.
+You will be asked for:
+- App name (e.g. `my_app`)
+- Git URL (e.g. `https://github.com/yourname/my_app`)
+- Branch (e.g. `main` or `version-15`)
+
+---
+
+### What Happens Next (Automatic)
+
+After you answer the questions, the script:
+
+1. Creates a `docker-compose.yml` file for your site
+2. Starts the containers
+3. Downloads the selected apps (only if not already downloaded)
+4. Creates the ERPNext site with your database
+5. Installs ERPNext and any apps you selected
+6. Builds the JavaScript/CSS assets
+7. Runs database migrations
+8. Shows you the access URL
+
+> **This takes 5–15 minutes** depending on your internet speed and machine. You will see log output in the terminal — this is normal.
+
+---
+
+## After Setup — Access Your Site
+
+| Field | Value |
+|-------|-------|
+| URL | `http://yoursite.localhost:8081` (Mac) or `http://yoursite.local:8081` (Linux) |
+| Username | `Administrator` |
+| Password | `admin` |
+
+> **Change your password** immediately after first login!
+
+---
+
+## What Gets Created (4 Containers)
+
+| Container | What it does |
+|-----------|-------------|
+| `yoursite-app` | Runs ERPNext — the web server, background workers, and scheduler |
+| `yoursite-db` | Stores all your data (MariaDB or PostgreSQL) |
+| `yoursite-redis` | Handles caching, job queues, and live page updates |
+| `yoursite-create-site` | Temporary — sets up the site, then removes itself |
+
+---
+
+## Apps Installed
+
+| App | Always installed? | Notes |
+|-----|-------------------|-------|
+| ERPNext | Yes | Full business ERP |
+| frappe_pg | Yes (PostgreSQL only) | Makes Frappe work with PostgreSQL |
+| UI Theme | Optional | Custom branding |
+| HRMS | Optional | HR & Payroll |
+| Raven | Optional | Team chat |
+| Custom | Optional | Your own app |
+
+---
+
+## Managing Your Site
+
+Use the interactive manager script for all container operations:
+
+```bash
+./docker-manager-local.sh        # Mac (no sudo)
+sudo ./docker-manager-local.sh   # Linux
+```
+
+**Menu options:**
+1. Show running containers
+2. Open terminal in container (as frappe user)
+3. Open terminal in container (as root)
+4. Manage Frappe processes (start / stop / restart via Supervisor)
+5. View logs
+6. Start / stop / restart / remove containers
+7. Show site information
+8. Root access to a specific container
+9. Transfer files between host and container
+10. Install software packages inside container
+11. Exit
+
+---
+
+## Process Management
+
+ERPNext runs 3 processes inside the app container, managed by **Supervisor**:
+
+| Process | What it does |
+|---------|-------------|
+| `web` | The web server — serves ERPNext pages |
+| `worker` | Runs background jobs (emails, exports, etc.) |
+| `schedule` | Runs scheduled tasks (like cron) |
+
+**Check process status:**
+```bash
+docker exec SITE_NAME-app /home/frappe/.local/bin/supervisorctl \
+  -c /home/frappe/supervisor/supervisord.conf status
+```
+
+**Restart a specific process:**
+```bash
+# Restart web server
+docker exec SITE_NAME-app /home/frappe/.local/bin/supervisorctl \
+  -c /home/frappe/supervisor/supervisord.conf restart web
+
+# Restart background worker
+docker exec SITE_NAME-app /home/frappe/.local/bin/supervisorctl \
+  -c /home/frappe/supervisor/supervisord.conf restart worker
+
+# Restart scheduler
+docker exec SITE_NAME-app /home/frappe/.local/bin/supervisorctl \
+  -c /home/frappe/supervisor/supervisord.conf restart schedule
+
+# Restart everything
+docker exec SITE_NAME-app /home/frappe/.local/bin/supervisorctl \
+  -c /home/frappe/supervisor/supervisord.conf restart all
+```
+
+**View live logs:**
+```bash
+docker exec SITE_NAME-app tail -f /home/frappe/supervisor/logs/web.log
+docker exec SITE_NAME-app tail -f /home/frappe/supervisor/logs/worker.log
+docker exec SITE_NAME-app tail -f /home/frappe/supervisor/logs/schedule.log
+```
+
+---
+
+## Traefik — What Is It and Why Do You Need It?
+
+**Traefik** is a reverse proxy that sits in front of your ERPNext container and routes web traffic to it. Think of it as a traffic controller.
+
+- It lets you use a domain name like `mysite.localhost` instead of `localhost:8000`
+- It handles routing automatically based on Docker container labels
+- On Mac it runs without sudo; on Linux it needs sudo
+
+You only need to run the Traefik setup script **once**. After that, you can create as many sites as you want — Traefik stays running in the background.
+
+---
+
+## Traefik Dashboard
+
+You can view Traefik's routing information at:
+```
+http://localhost:8080
+```
+
+This shows all routes Traefik is handling — useful for debugging.
+
+---
+
+## Common Troubleshooting
+
+### Site is not loading
+```bash
+# 1. Check if containers are running
+docker ps
+
+# 2. Check app container logs
+docker logs SITE_NAME-app --tail 50
+
+# 3. Restart all processes
+docker exec SITE_NAME-app /home/frappe/.local/bin/supervisorctl \
+  -c /home/frappe/supervisor/supervisord.conf restart all
+```
+
+### "Port already in use" error
+This means something else is using port 80 or 8081.
+```bash
+# Check what is using port 80
+sudo ss -ltnp | grep :80
+
+# Re-run Traefik setup — it handles port conflicts automatically
+./setup-traefik-local-mac-no-sudo.sh   # Mac
+sudo ./setup-traefik-local.sh          # Linux
+```
+
+### Container keeps restarting
+- Wait 2–3 minutes after first run — the `create-site` container takes time
+- Check logs: `docker logs SITE_NAME-app --tail 30`
+
+### Site domain not found in browser
+On Linux, the script adds your site to `/etc/hosts`. Check it:
+```bash
+cat /etc/hosts | grep yoursite
+```
+
+If missing, add it manually:
+```bash
+echo "127.0.0.1 yoursite.local" | sudo tee -a /etc/hosts
+```
+
+On Mac with `.localhost` domains, no hosts file editing is needed.
+
+### App installation failed mid-way
+If create-site failed, you can delete the site folder and re-run:
+```bash
+# Remove the generated folder
+rm -rf yoursite-local/
+
+# Re-run the generator
+./generate_frappe_docker_local.sh
+```
+
+---
+
+## Multiple Sites
+
+You can create multiple independent ERPNext sites on the same machine. Just run the generator script again with a different site name.
+
+```bash
+./generate_frappe_docker_local.sh   # demo.localhost
+./generate_frappe_docker_local.sh   # test.localhost
+```
+
+Each site gets its own set of 4 containers. They all share the same Traefik instance.
+
+---
+
+## Folder Structure
+
+```
+Docker-Local/
+├── generate_frappe_docker_local.sh     # Main script — creates a new site
+├── docker-manager-local.sh             # Interactive site manager
+├── setup-traefik-local-mac-no-sudo.sh  # Mac Traefik setup (no sudo) — recommended
+├── setup-traefik-local-mac.sh          # Mac Traefik setup (with sudo)
+├── setup-traefik-local.sh              # Linux Traefik setup
+├── traefik-docker-compose.yml          # Traefik Docker Compose config
+├── .traefik-local-config               # Stores your chosen Traefik port
+├── helper-screenshot/                  # Documentation screenshots
+└── MAC_COMPATIBILITY.md                # Mac-specific guide
+```
+
+---
+
+## Configuration File: `.traefik-local-config`
+
+After running the Traefik setup, this file is created automatically. It stores your port settings:
+
+```bash
+TRAEFIK_HTTP_PORT=8081    # The port your sites are accessible on
+USE_LOCALHOST=true         # Whether to use .localhost domains
+```
+
+The `generate_frappe_docker_local.sh` script reads this file and shows you the correct URL.
+
+---
+
+## Security Notes
+
+- **Local only** — these containers are not accessible from the internet
+- **Default password is `admin`** — change it after first login
+- **HTTP only** — no SSL certificate (not needed for local development)
+
+---
+
+## Mac-Specific Tips
+
+- Use `.localhost` domains — they work natively on macOS without editing `/etc/hosts`
+- Use `setup-traefik-local-mac-no-sudo.sh` — no sudo needed
+- Default port is `8081` — avoids conflicts with macOS built-in services on port 80
+- Docker Desktop must be running before you start
+
+---
+
+## Main Documentation
+
+- **Full project guide**: [../README.md](../README.md)
+- **Database access guide (MariaDB & PostgreSQL)**: [DATABASE.md](DATABASE.md)
+- **Mac compatibility details**: [MAC_COMPATIBILITY.md](MAC_COMPATIBILITY.md)
+- **VPS / Production setup**: [../Docker-on-VPS/README.md](../Docker-on-VPS/README.md)
+
+---
+
+**Tip**: Use `docker-manager-local.sh` for day-to-day operations — it handles everything through a simple numbered menu.

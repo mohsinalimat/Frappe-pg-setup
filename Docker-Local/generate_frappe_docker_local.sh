@@ -105,22 +105,99 @@ manage_hosts_entry() {
     esac
 }
 
-# Generate the optimized docker-compose.yml file
+# Generate the docker-compose.yml file
 generate_docker_compose() {
     local safe_site_name=$1
     local site_name=$2
+    local db_type=${3:-mariadb}
+    local external_pg=${4:-false}
+    local pg_root_user=${5:-frappe_root}
+    local pg_root_password=${6:-admin}
+    local selected_apps=${7:-""}
     local compose_file="$safe_site_name/${safe_site_name}-docker-compose.yml"
-    
+
+    # DB connection details
+    local db_host="db"
+    local db_port="3306"
+    if [[ "$db_type" == "postgres" ]]; then
+        db_port="5432"
+        if [[ "$external_pg" == "true" ]]; then
+            db_host="host.docker.internal"
+        fi
+    fi
+
+    # Build app command strings from selected_apps tokens
+    local app_download_cmds=""
+    local pip_install_list=""
+    local app_install_cmds=""
+
+    # Postgres: always include frappe_pg
+    if [[ "$db_type" == "postgres" ]]; then
+        app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && bench get-app frappe_pg https://github.com/excel-azmin/frappe_pg.git || true
+'
+        pip_install_list+=" apps/frappe_pg"
+    fi
+
+    for token in $selected_apps; do
+        case "$token" in
+            ui_theme)
+                app_download_cmds+='        [ ! -d "apps/ui_theme" ] && bench get-app ui_theme https://github.com/DarshanaPBrainmine/ui_theme_erpnext.git || true
+'
+                pip_install_list+=" apps/ui_theme"
+                app_install_cmds+="        bench --site ${site_name} install-app ui_theme || true
+"
+                ;;
+            hrms)
+                app_download_cmds+='        [ ! -d "apps/hrms" ] && bench get-app hrms https://github.com/frappe/hrms.git --branch version-15 || true
+'
+                pip_install_list+=" apps/hrms"
+                app_install_cmds+="        echo \"Installing HRMS...\"
+        bench --site ${site_name} install-app hrms || true
+        echo \"Running migrate to resolve any HRMS-ERPNext table conflicts...\"
+        bench --site ${site_name} migrate || true
+"
+                ;;
+            raven)
+                app_download_cmds+='        [ ! -d "apps/raven" ] && bench get-app raven https://github.com/The-Commit-Company/raven.git || true
+'
+                pip_install_list+=" apps/raven"
+                app_install_cmds+="        bench --site ${site_name} install-app raven || true
+"
+                ;;
+            custom:*)
+                local cname; cname=$(echo "$token" | cut -d: -f2)
+                local curl; curl=$(echo "$token" | cut -d: -f3)
+                local cbranch; cbranch=$(echo "$token" | cut -d: -f4)
+                if [[ -n "$cbranch" ]]; then
+                    app_download_cmds+="        [ ! -d \"apps/${cname}\" ] && bench get-app ${cname} ${curl} --branch ${cbranch} || true
+"
+                else
+                    app_download_cmds+="        [ ! -d \"apps/${cname}\" ] && bench get-app ${cname} ${curl} || true
+"
+                fi
+                pip_install_list+=" apps/${cname}"
+                app_install_cmds+="        bench --site ${site_name} install-app ${cname} || true
+"
+                ;;
+        esac
+    done
+
+    # Build pip install command
+    local pip_install_cmd=""
+    if [[ -n "$pip_install_list" ]]; then
+        pip_install_cmd="        pip install -q -e${pip_install_list}
+"
+    fi
+
     # Load local config to check for custom ports
     local http_entrypoint="web"
-    
     if load_local_config; then
-        # Use the configured entrypoint
         http_entrypoint="web"
     fi
 
     # Traefik labels for the main app container
-    local app_labels=$(cat <<EOF
+    local app_labels
+    app_labels=$(cat <<EOF
       - "traefik.enable=true"
       - "traefik.docker.network=traefik_proxy"
       - "traefik.http.services.${safe_site_name}-app.loadbalancer.server.port=8000"
@@ -135,19 +212,37 @@ generate_docker_compose() {
 EOF
 )
 
+    # Write compose file header and app service
     cat > "$compose_file" << EOF
 version: "3.8"
 
 services:
   app:
-    image: frappe/erpnext:v15.63.0
+    image: frappe/erpnext:v15.70.0
     container_name: ${safe_site_name}-app
     networks:
       - frappe_network
       - traefik_proxy
+EOF
+
+    # Add depends_on and optional extra_hosts for app service
+    if [[ "$external_pg" == "true" ]]; then
+        cat >> "$compose_file" << EOF
+    depends_on:
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+EOF
+    else
+        cat >> "$compose_file" << EOF
     depends_on:
       - db
       - redis
+EOF
+    fi
+
+    # App service — labels, volumes, environment, simplified supervisor entrypoint
+    cat >> "$compose_file" << EOF
     labels:
 ${app_labels}
     deploy:
@@ -156,9 +251,10 @@ ${app_labels}
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
+      - apps:/home/frappe/frappe-bench/apps
     environment:
-      DB_HOST: db
-      DB_PORT: "3306"
+      DB_HOST: ${db_host}
+      DB_PORT: "${db_port}"
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       SOCKETIO_PORT: "9000"
@@ -166,154 +262,124 @@ ${app_labels}
       - bash
       - -c
       - |
-        echo "Waiting for site to be ready...";
-        while [ ! -f sites/${site_name}/site_config.json ]; do
-          echo "Site not ready yet, waiting...";
-          sleep 5;
-        done;
-        echo "Site is ready, installing supervisor...";
-        
-        # Install supervisor using pip (works with frappe user)
-        pip3 install supervisor;
-        
-        # Create supervisor directories in user's home
-        mkdir -p /home/frappe/supervisor/conf.d /home/frappe/supervisor/logs;
-        
-        # Create supervisor config in user's home directory
+        ./env/bin/python -m pip install -q "pydantic~=2.10.2" "PyJWT~=2.8.0"
+        pip3 install -q supervisor
+        mkdir -p /home/frappe/supervisor/logs
         cat > /home/frappe/supervisor/supervisord.conf << 'SUPERVISOR_EOF'
-        [unix_http_server]
-        file=/home/frappe/supervisor/supervisor.sock
-        chmod=0777
-        chown=frappe:frappe
-
         [supervisord]
+        nodaemon=true
         logfile=/home/frappe/supervisor/logs/supervisord.log
-        pidfile=/home/frappe/supervisor/supervisord.pid
-        childlogdir=/home/frappe/supervisor/logs
-        nodaemon=false
-        user=frappe
 
-        [rpcinterface:supervisor]
-        supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
-
-        [supervisorctl]
-        serverurl=unix:///home/frappe/supervisor/supervisor.sock
-
-        [include]
-        files = /home/frappe/supervisor/conf.d/*.conf
-        SUPERVISOR_EOF
-
-        # Create Frappe process configurations
-        cat > /home/frappe/supervisor/conf.d/frappe.conf << 'FRAPPE_CONF_EOF'
-        [group:frappe]
-        programs=frappe-web,frappe-schedule,frappe-worker-short,frappe-worker-long,frappe-worker-default,frappe-websocket
-
-        [program:frappe-web]
+        [program:web]
         command=bench serve --port 8000
         directory=/home/frappe/frappe-bench
-        user=frappe
-        autostart=true
-        autorestart=true
-        redirect_stderr=true
-        stdout_logfile=/home/frappe/supervisor/logs/frappe-web.log
-        stderr_logfile=/home/frappe/supervisor/logs/frappe-web-error.log
+        stdout_logfile=/home/frappe/supervisor/logs/web.log
+        stderr_logfile=/home/frappe/supervisor/logs/web-error.log
 
-        [program:frappe-schedule]
+        [program:worker]
+        command=bench worker --queue short,default,long
+        directory=/home/frappe/frappe-bench
+        stdout_logfile=/home/frappe/supervisor/logs/worker.log
+        stderr_logfile=/home/frappe/supervisor/logs/worker-error.log
+
+        [program:schedule]
         command=bench schedule
         directory=/home/frappe/frappe-bench
-        user=frappe
-        autostart=true
-        autorestart=true
-        redirect_stderr=true
-        stdout_logfile=/home/frappe/supervisor/logs/frappe-schedule.log
-        stderr_logfile=/home/frappe/supervisor/logs/frappe-schedule-error.log
-
-        [program:frappe-worker-short]
-        command=bench worker --queue short
-        directory=/home/frappe/frappe-bench
-        user=frappe
-        autostart=true
-        autorestart=true
-        redirect_stderr=true
-        stdout_logfile=/home/frappe/supervisor/logs/frappe-worker-short.log
-        stderr_logfile=/home/frappe/supervisor/logs/frappe-worker-short-error.log
-
-        [program:frappe-worker-long]
-        command=bench worker --queue long
-        directory=/home/frappe/frappe-bench
-        user=frappe
-        autostart=true
-        autorestart=true
-        redirect_stderr=true
-        stdout_logfile=/home/frappe/supervisor/logs/frappe-worker-long.log
-        stderr_logfile=/home/frappe/supervisor/logs/frappe-worker-long-error.log
-
-        [program:frappe-worker-default]
-        command=bench worker --queue default
-        directory=/home/frappe/frappe-bench
-        user=frappe
-        autostart=true
-        autorestart=true
-        redirect_stderr=true
-        stdout_logfile=/home/frappe/supervisor/logs/frappe-worker-default.log
-        stderr_logfile=/home/frappe/supervisor/logs/frappe-worker-default-error.log
-
-        [program:frappe-websocket]
-        command=node /home/frappe/frappe-bench/apps/frappe/socketio.js
-        directory=/home/frappe/frappe-bench
-        user=frappe
-        autostart=true
-        autorestart=true
-        redirect_stderr=true
-        stdout_logfile=/home/frappe/supervisor/logs/frappe-websocket.log
-        stderr_logfile=/home/frappe/supervisor/logs/frappe-websocket-error.log
-        FRAPPE_CONF_EOF
-
-        echo "Supervisor installed and configured. Starting Frappe processes...";
-        
-        # Start supervisor using full path
-        /home/frappe/.local/bin/supervisord -c /home/frappe/supervisor/supervisord.conf;
-        
-        # Wait a moment for processes to start
-        sleep 5;
-        
-        # Show status using full path
-        /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf status;
-        
-        # Keep container running and show logs
-        tail -f /home/frappe/supervisor/logs/supervisord.log
+        stdout_logfile=/home/frappe/supervisor/logs/schedule.log
+        stderr_logfile=/home/frappe/supervisor/logs/schedule-error.log
+        SUPERVISOR_EOF
+        /home/frappe/.local/bin/supervisord -c /home/frappe/supervisor/supervisord.conf
 
   create-site:
-    image: frappe/erpnext:v15.63.0
+    image: frappe/erpnext:v15.70.0
     container_name: ${safe_site_name}-create-site
     networks:
       - frappe_network
+EOF
+
+    # Add extra_hosts for create-site if using external postgres
+    if [[ "$external_pg" == "true" ]]; then
+        cat >> "$compose_file" << EOF
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+EOF
+    fi
+
+    cat >> "$compose_file" << EOF
     deploy:
       restart_policy:
         condition: none
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
+      - apps:/home/frappe/frappe-bench/apps
     entrypoint:
       - bash
       - -c
       - |
-        wait-for-it -t 120 db:3306;
-        wait-for-it -t 120 redis:6379;
-        ls -1 apps > sites/apps.txt || true;
-        bench set-config -g db_host db;
-        bench set-config -gp db_port 3306;
-        bench set-config -g redis_cache "redis://redis:6379";
-        bench set-config -g redis_queue "redis://redis:6379";
-        bench set-config -g redis_socketio "redis://redis:6379";
-        bench set-config -gp socketio_port 9000;
-        if [ ! -d sites/${site_name} ]; then
-          echo "Creating new site...";
-          bench new-site --mariadb-user-host-login-scope='%' --admin-password=admin --db-root-username=root --db-root-password=admin --install-app erpnext --set-default ${site_name};
-          echo "${site_name}" > sites/currentsite.txt;
+EOF
+
+    # Create-site entrypoint — different for postgres vs mariadb
+    if [[ "$db_type" == "postgres" ]]; then
+        cat >> "$compose_file" << EOF
+        wait-for-it -t 120 ${db_host}:${db_port}
+        wait-for-it -t 120 redis:6379
+        cd /home/frappe/frappe-bench
+        bench set-config -g db_host ${db_host}
+        bench set-config -gp db_port ${db_port}
+        bench set-config -g db_type postgres
+        bench set-config -g redis_cache "redis://redis:6379"
+        bench set-config -g redis_queue "redis://redis:6379"
+        bench set-config -g redis_socketio "redis://redis:6379"
+        bench set-config -gp socketio_port 9000
+${app_download_cmds}${pip_install_cmd}
+        if [ ! -d "sites/${site_name}" ]; then
+          echo "Creating new site with PostgreSQL..."
+          bench new-site ${site_name} \\
+            --db-type postgres --db-host ${db_host} --db-port ${db_port} \\
+            --db-root-username ${pg_root_user} --db-root-password ${pg_root_password} \\
+            --admin-password admin
+          echo "${site_name}" > sites/currentsite.txt
+          bench --site ${site_name} install-app frappe_pg || true
+          bench --site ${site_name} execute frappe_pg.install_db_functions.install || true
+          bench --site ${site_name} install-app erpnext
+${app_install_cmds}          bench build
+          bench --site ${site_name} migrate
         else
-          echo "Site ${site_name} already exists, skipping creation";
+          echo "Site ${site_name} already exists, skipping creation"
         fi
+EOF
+    else
+        cat >> "$compose_file" << EOF
+        wait-for-it -t 120 db:3306
+        wait-for-it -t 120 redis:6379
+        cd /home/frappe/frappe-bench
+        bench set-config -g db_host db
+        bench set-config -gp db_port 3306
+        bench set-config -g redis_cache "redis://redis:6379"
+        bench set-config -g redis_queue "redis://redis:6379"
+        bench set-config -g redis_socketio "redis://redis:6379"
+        bench set-config -gp socketio_port 9000
+${app_download_cmds}${pip_install_cmd}
+        if [ ! -d "sites/${site_name}" ]; then
+          echo "Creating new site..."
+          bench new-site ${site_name} \\
+            --mariadb-user-host-login-scope='%' \\
+            --admin-password admin \\
+            --db-host db --db-root-username root --db-root-password admin \\
+            --install-app erpnext
+          echo "${site_name}" > sites/currentsite.txt
+${app_install_cmds}          bench build
+          bench --site ${site_name} migrate
+        else
+          echo "Site ${site_name} already exists, skipping creation"
+        fi
+EOF
+    fi
+
+    # DB service — conditional on db_type
+    if [[ "$db_type" == "mariadb" ]]; then
+        cat >> "$compose_file" << EOF
 
   db:
     image: mariadb:10.6
@@ -337,6 +403,33 @@ ${app_labels}
       MARIADB_ROOT_PASSWORD: admin
     volumes:
       - db-data:/var/lib/mysql
+EOF
+    elif [[ "$db_type" == "postgres" && "$external_pg" != "true" ]]; then
+        cat >> "$compose_file" << EOF
+
+  db:
+    image: postgres:14
+    container_name: ${safe_site_name}-db
+    networks:
+      - frappe_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${pg_root_user}"]
+      interval: 1s
+      retries: 20
+    deploy:
+      restart_policy:
+        condition: on-failure
+    environment:
+      POSTGRES_USER: ${pg_root_user}
+      POSTGRES_PASSWORD: ${pg_root_password}
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - db-data:/var/lib/postgresql/data
+EOF
+    fi
+
+    # Redis service, networks, and volumes
+    cat >> "$compose_file" << EOF
 
   redis:
     image: redis:6.2-alpine
@@ -346,6 +439,8 @@ ${app_labels}
     deploy:
       restart_policy:
         condition: on-failure
+    volumes:
+      - redis-data:/data
 
 networks:
   frappe_network:
@@ -356,7 +451,18 @@ networks:
 volumes:
   sites:
   logs:
+  apps:
+EOF
+
+    # db-data volume only when we have a db container
+    if [[ "$db_type" != "postgres" || "$external_pg" != "true" ]]; then
+        cat >> "$compose_file" << EOF
   db-data:
+EOF
+    fi
+
+    cat >> "$compose_file" << EOF
+  redis-data:
 EOF
 }
 
@@ -382,7 +488,7 @@ echo ""
 echo -e "${BLUE}🚀 Optimized for local development with minimal containers:${NC}"
 echo "  • 1 app container (runs all Frappe processes via Supervisor)"
 echo "  • 1 Redis container (handles cache, queue, and socketio)"
-echo "  • 1 MariaDB container"
+echo "  • 1 MariaDB or PostgreSQL container"
 echo "  • 1 temporary create-site container"
 echo ""
 
@@ -425,6 +531,35 @@ if ! docker network ls | grep -q traefik_proxy; then
     docker network create traefik_proxy
 fi
 
+# Prompt for database type
+echo ""
+read -p "Use PostgreSQL instead of MariaDB? (y/n, default: n): " use_postgres
+if [[ "$use_postgres" =~ ^[Yy]$ ]]; then
+    db_type="postgres"
+    echo -e "${YELLOW}⚠️  PostgreSQL support requires the frappe_pg compatibility app.${NC}"
+    echo -e "${YELLOW}   This is community-maintained. Test thoroughly before production use.${NC}"
+    echo ""
+    read -p "Use external PostgreSQL running on host machine? (y/n): " use_external_pg
+    if [[ "$use_external_pg" =~ ^[Yy]$ ]]; then
+        external_pg="true"
+        echo -e "${BLUE}📍 Will connect to PostgreSQL on host via host.docker.internal${NC}"
+    else
+        external_pg="false"
+        echo -e "${BLUE}📍 A PostgreSQL 14 container will be created${NC}"
+    fi
+    read -p "PostgreSQL superuser username (default: frappe_root): " pg_root_user
+    pg_root_user=${pg_root_user:-frappe_root}
+    read -sp "PostgreSQL superuser password (default: admin): " pg_root_password
+    echo ""
+    pg_root_password=${pg_root_password:-admin}
+else
+    db_type="mariadb"
+    external_pg="false"
+    pg_root_user=""
+    pg_root_password=""
+fi
+echo ""
+
 # Check if Traefik is running
 if ! is_traefik_running; then
     echo -e "${RED}⚠️  Traefik is not running!${NC}"
@@ -462,16 +597,45 @@ safe_site_name=$(echo "$site_name" | sed 's/[^a-zA-Z0-9]/_/g')
 # Create site directory
 mkdir -p "$safe_site_name"
 
+# App selection
+echo ""
+echo -e "${BLUE}📦 Select additional apps to install (ERPNext is always included):${NC}"
+echo ""
+selected_apps=""
+
+read -p "Install UI Theme? (y/n): " install_ui_theme
+[[ "$install_ui_theme" =~ ^[Yy]$ ]] && selected_apps+=" ui_theme"
+
+read -p "Install HRMS (HR & Payroll)? (y/n): " install_hrms
+[[ "$install_hrms" =~ ^[Yy]$ ]] && selected_apps+=" hrms"
+
+read -p "Install Raven (Chat)? (y/n): " install_raven
+[[ "$install_raven" =~ ^[Yy]$ ]] && selected_apps+=" raven"
+
+read -p "Add a custom app? (y/n): " add_custom
+if [[ "$add_custom" =~ ^[Yy]$ ]]; then
+    read -p "  App name: " custom_name
+    read -p "  Git URL: " custom_url
+    read -p "  Branch (leave blank for default): " custom_branch
+    if [[ -n "$custom_branch" ]]; then
+        selected_apps+=" custom:${custom_name}:${custom_url}:${custom_branch}"
+    else
+        selected_apps+=" custom:${custom_name}:${custom_url}"
+    fi
+fi
+selected_apps="${selected_apps# }"
+echo ""
+
 # Create .env file
 cat > "$safe_site_name/.env" << EOF
-ERPNEXT_VERSION=v15.63.0
+ERPNEXT_VERSION=v15.70.0
 DB_PASSWORD=admin
 FRAPPE_SITE_NAME_HEADER=${site_name}
 SITES=${site_name}
 EOF
 
 # Generate docker-compose
-generate_docker_compose "$safe_site_name" "$site_name"
+generate_docker_compose "$safe_site_name" "$site_name" "$db_type" "$external_pg" "$pg_root_user" "$pg_root_password" "$selected_apps"
 
 # Start containers
 echo -e "${GREEN}Starting your optimized Frappe/ERPNext site...${NC}"
@@ -500,7 +664,7 @@ echo -e "${BLUE}🔧 Managing hosts file for local access...${NC}"
 if manage_hosts_entry "$site_name" "add"; then
     if [[ ! $site_name =~ \.localhost$ ]]; then
         # Get the correct port from local config
-        local display_port=""
+        display_port=""
         if [[ -f ".traefik-local-config" ]]; then
             source .traefik-local-config
             if [[ "$TRAEFIK_HTTP_PORT" != "80" ]]; then
@@ -517,7 +681,7 @@ echo ""
 echo -e "${GREEN}🚀 Your optimized site is being prepared and will be live in approximately 5 minutes...${NC}"
 
 # Determine the access URL based on configuration
-local access_url=""
+access_url=""
 if [[ -f ".traefik-local-config" ]]; then
     source .traefik-local-config
     if [[ "$USE_LOCALHOST" == "true" ]]; then
@@ -540,7 +704,7 @@ fi
 echo -e "🌐 Your site will be accessible at: ${access_url}"
 
 echo ""
-echo "📋 Frappe Version: v15.63.0"
+echo "📋 Frappe Version: v15.70.0"
 echo "👤 Default Username: Administrator"
 echo "🔑 Default Password: admin"
 echo ""
@@ -572,10 +736,11 @@ echo -e "${GREEN}   🔑 Password: admin${NC}"
 echo ""
 echo "🔧 Process Management Commands:"
 echo "   • Check status: sudo docker exec ${safe_site_name}-app /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf status"
-echo "   • Restart web: sudo docker exec ${safe_site_name}-app /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf restart frappe-web"
-echo "   • Restart workers: sudo docker exec ${safe_site_name}-app /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf restart frappe-worker-*"
+echo "   • Restart web: sudo docker exec ${safe_site_name}-app /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf restart web"
+echo "   • Restart worker: sudo docker exec ${safe_site_name}-app /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf restart worker"
+echo "   • Restart scheduler: sudo docker exec ${safe_site_name}-app /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf restart schedule"
 echo "   • Restart all: sudo docker exec ${safe_site_name}-app /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf restart all"
-echo "   • View logs: sudo docker exec ${safe_site_name}-app tail -f /home/frappe/supervisor/logs/frappe-web.log"
+echo "   • View logs: sudo docker exec ${safe_site_name}-app tail -f /home/frappe/supervisor/logs/web.log"
 echo ""
 
 # Docker Manager prompt (if needed)
