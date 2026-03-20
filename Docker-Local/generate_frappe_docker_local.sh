@@ -14,14 +14,14 @@ command_exists() {
     command -v "$1" &> /dev/null
 }
 
-# Check if a port is in use
+# Check if a port is in use (works on macOS and Linux)
 is_port_in_use() {
-    ss -ltn "sport = :$1" | grep -q LISTEN
+    lsof -iTCP:"$1" -sTCP:LISTEN -t &>/dev/null
 }
 
-# Get the process using a port
+# Get the process using a port (works on macOS and Linux)
 get_process_on_port() {
-    ss -ltnp "sport = :$1" | grep LISTEN | awk '{print $7}'
+    lsof -iTCP:"$1" -sTCP:LISTEN -Fp 2>/dev/null | grep '^p' | sed 's/^p/PID: /'
 }
 
 # Check if Traefik is running
@@ -371,7 +371,7 @@ ${app_download_cmds}${pip_install_cmd}
             --db-type postgres --db-host ${db_host} --db-port ${db_port} \\
             --db-root-username ${pg_root_user} --db-root-password ${pg_root_password} \\
             --admin-password admin
-          echo "${site_name}" > sites/currentsite.txt
+          bench use ${site_name}
           echo "Site created cleanly. Now activating frappe_pg..."
           grep -qxF "frappe_pg" sites/apps.txt 2>/dev/null || printf "\nfrappe_pg\n" >> sites/apps.txt
           ./env/bin/pip install -q -e apps/frappe_pg
@@ -382,10 +382,24 @@ ${app_download_cmds}${pip_install_cmd}
 ${app_install_cmds}          bench build
           bench --site ${site_name} migrate
         else
-          echo "Site ${site_name} already exists. Ensuring frappe_pg is installed in env..."
+          echo "Site ${site_name} already exists. Checking database connectivity..."
+          if bench --site ${site_name} list-apps > /dev/null 2>&1; then
+            echo "Site is healthy. Ensuring frappe_pg is installed in env..."
+          else
+            echo "ERROR: Site directory exists but database is missing. Removing stale site dir and recreating..."
+            rm -rf "sites/${site_name}"
+            bench new-site ${site_name} \\
+              --db-type postgres --db-host ${db_host} --db-port ${db_port} \\
+              --db-root-username ${pg_root_user} --db-root-password ${pg_root_password} \\
+              --admin-password admin
+            bench use ${site_name}
+            echo "Site recreated. Now activating frappe_pg..."
+          fi
           grep -qxF "frappe_pg" sites/apps.txt 2>/dev/null || printf "\nfrappe_pg\n" >> sites/apps.txt
           ./env/bin/pip install -q -e apps/frappe_pg
-        fi
+          bench --site ${site_name} install-app frappe_pg || true
+          bench --site ${site_name} install-app erpnext || true
+${app_install_cmds}        fi
 EOF
     else
         cat >> "$compose_file" << EOF
@@ -406,7 +420,7 @@ ${app_download_cmds}${pip_install_cmd}
             --admin-password admin \\
             --db-host db --db-root-username root --db-root-password admin \\
             --install-app erpnext
-          echo "${site_name}" > sites/currentsite.txt
+          bench use ${site_name}
 ${app_install_cmds}          bench build
           bench --site ${site_name} migrate
         else
@@ -436,6 +450,8 @@ EOF
       - --collation-server=utf8mb4_unicode_ci
       - --skip-character-set-client-handshake
       - --skip-innodb-read-only-compressed
+    ports:
+      - "127.0.0.1:3306:3306"
     environment:
       MYSQL_ROOT_PASSWORD: admin
       MARIADB_ROOT_PASSWORD: admin
@@ -443,6 +459,15 @@ EOF
       - db-data:/var/lib/mysql
 EOF
     elif [[ "$db_type" == "postgres" && "$external_pg" != "true" ]]; then
+        # Find a free host port for PostgreSQL (5432, then 5433, 5434, ...)
+        local pg_host_port=5432
+        while lsof -iTCP:"${pg_host_port}" -sTCP:LISTEN -t &>/dev/null; do
+            pg_host_port=$((pg_host_port + 1))
+        done
+        if [[ "$pg_host_port" != "5432" ]]; then
+            echo -e "${YELLOW}⚠️  Port 5432 is in use on host. PostgreSQL container will be exposed on port ${pg_host_port} instead.${NC}"
+        fi
+
         cat >> "$compose_file" << EOF
 
   db:
@@ -457,6 +482,8 @@ EOF
     deploy:
       restart_policy:
         condition: on-failure
+    ports:
+      - "127.0.0.1:${pg_host_port}:5432"
     environment:
       POSTGRES_USER: ${pg_root_user}
       POSTGRES_PASSWORD: ${pg_root_password}
