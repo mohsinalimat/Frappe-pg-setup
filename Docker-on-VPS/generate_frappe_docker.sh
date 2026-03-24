@@ -66,13 +66,19 @@ generate_docker_compose() {
     local pip_install_list=""
     local app_install_cmds=""
 
-    # Postgres: clone frappe_pg source ONLY — do NOT pip install yet.
-    # frappe_pg must be pip-installed AFTER bench new-site so its SQL patches
-    # don't interfere with the initial frappe schema creation.
+    # Postgres: clone and immediately pip-install frappe_pg BEFORE bench new-site.
+    # frappe_pg must be pip-installed early because:
+    # 1. A persisted volume may have frappe_pg in sites/apps.txt from a previous run.
+    # 2. bench new-site calls make_conf → frappe.init (which imports all apps in apps.txt)
+    #    BEFORE creating the PostgreSQL role. If frappe_pg is in apps.txt but not
+    #    pip-installed, frappe.init fails, the role is never created, and site setup breaks.
+    # Pip-installing alone does NOT activate the SQL patches (those only activate when
+    # frappe_pg is installed-app and its hooks run), so schema creation is unaffected.
     if [[ "$db_type" == "postgres" ]]; then
         app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && git clone https://github.com/excel-azmin/frappe_pg.git apps/frappe_pg || true
+        ./env/bin/pip install -q -e apps/frappe_pg
 '
-        # intentionally NOT added to pip_install_list
+        # intentionally NOT added to pip_install_list (already installed above)
     fi
 
     for token in $selected_apps; do
@@ -401,7 +407,7 @@ EOF
         cat >> "$compose_file" << EOF
 
   db:
-    image: postgres:14
+    image: postgres:16
     container_name: ${safe_site_name}-db
     networks:
       - frappe_network
@@ -503,7 +509,7 @@ if [[ "$use_postgres" =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}📍 Will connect to PostgreSQL on host via host.docker.internal${NC}"
     else
         external_pg="false"
-        echo -e "${BLUE}📍 A PostgreSQL 14 container will be created${NC}"
+        echo -e "${BLUE}📍 A PostgreSQL 16 container will be created${NC}"
     fi
     read -p "PostgreSQL superuser username (default: frappe_root): " pg_root_user
     pg_root_user=${pg_root_user:-frappe_root}
