@@ -191,7 +191,7 @@ generate_docker_compose() {
     # Build pip install command
     local pip_install_cmd=""
     if [[ -n "$pip_install_list" ]]; then
-        pip_install_cmd="        pip install -q -e${pip_install_list}
+        pip_install_cmd="        ./env/bin/pip install -q -e${pip_install_list}
 "
     fi
 
