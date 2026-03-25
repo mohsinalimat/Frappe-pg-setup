@@ -73,8 +73,9 @@ generate_docker_compose() {
     # is never created. Pip-installing does NOT activate SQL patches (those fire only when
     # frappe_pg is added via install-app), so schema creation remains unaffected.
     if [[ "$db_type" == "postgres" ]]; then
-        app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && git clone https://github.com/excel-azmin/frappe_pg.git apps/frappe_pg || true
+        app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && git clone https://github.com/NileshPBrainmine/frappe_pg.git apps/frappe_pg || true
         ./env/bin/pip install -q -e apps/frappe_pg
+        ./env/bin/pip install -q "sqlglot>=20.0.0"
 '
         # intentionally NOT added to pip_install_list (already installed above)
     fi
@@ -310,62 +311,6 @@ EOF
         bench set-config -g redis_socketio "redis://redis:6379"
         bench set-config -gp socketio_port 9000
 ${app_download_cmds}${pip_install_cmd}
-        cat > /tmp/patch_frappe_pg.py << 'PYEOF'
-        path = 'apps/frappe_pg/frappe_pg/postgres/database_patches.py'
-        content = open(path).read()
-
-        # Patch 1: escape lone % in patched_sql to avoid Python string formatting errors
-        lines = content.splitlines(keepends=True)
-        result = []
-        for line in lines:
-            s = line.lstrip()
-            if s.startswith('return frappe.database.database.Database.sql(self, pg_query, pg_values'):
-                indent = line[:len(line) - len(s)]
-                result.append(indent + 'pg_query = pg_query.replace("%", "%%") if not pg_values else pg_query\n')
-            result.append(line)
-        content = ''.join(result)
-
-        # Patch 2: fix patched_rollback to accept save_point= kwarg (frappe v15)
-        # Frappe calls frappe.db.rollback(save_point=name) for savepoint rollbacks.
-        # Without this patch the setup wizard fails with:
-        #   TypeError: patched_rollback() got an unexpected keyword argument 'save_point'
-        old_sig = 'def patched_rollback(self):'
-        new_sig = 'def patched_rollback(self, *, save_point=None):'
-        if old_sig in content and new_sig not in content:
-            content = content.replace(old_sig, new_sig)
-            # Insert savepoint handling before the full-rollback try block
-            old_body = (
-                '    try:\n'
-                '        return _original_rollback(self)\n'
-                '    except Exception as e:\n'
-                '        # Don\'t log rollback failures during error handling\n'
-                '        # as this can cause cascading errors\n'
-                '        pass\n'
-            )
-            new_body = (
-                '    if save_point:\n'
-                '        try:\n'
-                '            import frappe.database.database\n'
-                '            frappe.database.database.Database.sql(\n'
-                '                self, f"ROLLBACK TO SAVEPOINT {save_point}")\n'
-                '        except Exception:\n'
-                '            pass\n'
-                '        return\n'
-                '    try:\n'
-                '        return _original_rollback(self)\n'
-                '    except Exception:\n'
-                '        pass\n'
-            )
-            if old_body in content:
-                content = content.replace(old_body, new_body)
-                print('frappe_pg: patched_rollback save_point support added')
-            else:
-                print('frappe_pg: patched_rollback body not matched - skipping body patch')
-
-        open(path, 'w').write(content)
-        print('frappe_pg patched')
-        PYEOF
-        python3 /tmp/patch_frappe_pg.py 2>/dev/null || true
         if [ ! -d "sites/${site_name}" ]; then
           echo "Creating new site with PostgreSQL (frappe_pg not active yet)..."
           bench new-site ${site_name} \\
