@@ -138,7 +138,7 @@ generate_docker_compose() {
     # is never created. Pip-installing does NOT activate SQL patches (those fire only when
     # frappe_pg is added via install-app), so schema creation remains unaffected.
     if [[ "$db_type" == "postgres" ]]; then
-        app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && git clone https://github.com/NileshPBrainmine/frappe_pg.git apps/frappe_pg || true
+        app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && git clone https://github.com/excel-azmin/frappe_pg.git apps/frappe_pg || true
         ./env/bin/pip install -q -e apps/frappe_pg
         ./env/bin/pip install -q "sqlglot>=20.0.0"
 '
@@ -356,6 +356,129 @@ EOF
         bench set-config -g redis_socketio "redis://redis:6379"
         bench set-config -gp socketio_port 9000
 ${app_download_cmds}${pip_install_cmd}
+        cat > /tmp/patch_frappe_pg.py << 'PYEOF'
+        path = 'apps/frappe_pg/frappe_pg/postgres/database_patches.py'
+        content = open(path).read()
+        content = content.replace('self.con)', 'getattr(self, "conn", getattr(self, "con", None)))')
+
+        # ---------------------------------------------------------------------------
+        # Patch A: fix patched_rollback to accept save_point= kwarg (frappe v15)
+        # Frappe calls frappe.db.rollback(save_point=name) for savepoint rollbacks.
+        # Without this the setup wizard fails with:
+        #   TypeError: patched_rollback() got an unexpected keyword argument 'save_point'
+        # ---------------------------------------------------------------------------
+        old_sig = 'def patched_rollback(self):'
+        new_sig = 'def patched_rollback(self, *, save_point=None):'
+        if old_sig in content and new_sig not in content:
+            content = content.replace(old_sig, new_sig)
+            old_body = (
+                '    try:\n'
+                '        return _original_rollback(self)\n'
+                '    except Exception as e:\n'
+                '        # Don\'t log rollback failures during error handling\n'
+                '        # as this can cause cascading errors\n'
+                '        pass\n'
+            )
+            new_body = (
+                '    if save_point:\n'
+                '        try:\n'
+                '            import frappe.database.database\n'
+                '            frappe.database.database.Database.sql(\n'
+                '                self, f"ROLLBACK TO SAVEPOINT {save_point}")\n'
+                '        except Exception:\n'
+                '            pass\n'
+                '        return\n'
+                '    try:\n'
+                '        return _original_rollback(self)\n'
+                '    except Exception:\n'
+                '        pass\n'
+            )
+            if old_body in content:
+                content = content.replace(old_body, new_body)
+                print('frappe_pg: patched_rollback save_point support added')
+
+        open(path, 'w').write(content)
+        content = open(path).read()  # re-read after write
+
+        # ---------------------------------------------------------------------------
+        # Patch B: per-query savepoints in patched_sql
+        #
+        # MySQL allows a single failing query to be retried; the surrounding
+        # transaction continues.  PostgreSQL aborts the ENTIRE transaction on any
+        # query error.  The old frappe_pg code tried to recover with a full
+        # self.rollback() which wipes the whole transaction (e.g. the company
+        # being created during the setup wizard).
+        #
+        # Fix: wrap every query in an automatic SAVEPOINT so only that query is
+        # rolled back on failure, matching MySQL's per-statement isolation.
+        # ---------------------------------------------------------------------------
+        GUARD = '# _FRAPPE_PG_SAVEPOINT_PATCH_APPLIED_'
+        if GUARD not in content:
+            NEW_CODE = '''
+# _FRAPPE_PG_SAVEPOINT_PATCH_APPLIED_
+# Per-query savepoint override injected by generate script.
+# This replaces the old retry-loop patched_sql with one that uses
+# SAVEPOINT / ROLLBACK TO SAVEPOINT so a single failing query does not
+# abort the surrounding transaction (matches MySQL behaviour).
+import threading as _fp_tl
+import psycopg2.extensions as _fp_pgext
+_fp_sp = _fp_tl.local()
+
+def _fp_next_sp():
+    if not hasattr(_fp_sp, "n"): _fp_sp.n = 0
+    _fp_sp.n = (_fp_sp.n + 1) % 1000000
+    return "frappe_pg_sp_{}".format(_fp_sp.n)
+
+def _fp_in_txn(conn):
+    try: return conn.status == _fp_pgext.STATUS_IN_TRANSACTION
+    except: return False
+
+def patched_sql(self, query, values=(), *args, **kwargs):
+    import frappe.database.database
+    from frappe.database.postgres.database import modify_query, modify_values as _fp_mv
+    from frappe_pg.postgres.query_transformers import apply_all_query_transformations
+    t = apply_all_query_transformations(query)
+    q = modify_query(t)
+    v = _fp_mv(values)
+    if not v: q = q.replace("%", "%%")
+    _B = frappe.database.database.Database.sql
+    q_up = q.strip().upper()
+    ctrl = any(q_up.startswith(k) for k in (
+        "BEGIN","COMMIT","ROLLBACK","SAVEPOINT","RELEASE SAVEPOINT","SET ","SET\\t"))
+    sp = None
+    _db_conn = getattr(self, 'conn', getattr(self, 'con', None))
+    if not ctrl and _fp_in_txn(_db_conn):
+        sp = _fp_next_sp()
+        try: _B(self, "SAVEPOINT " + sp)
+        except: sp = None
+    try:
+        r = _B(self, q, v, *args, **kwargs)
+        if sp:
+            try: _B(self, "RELEASE SAVEPOINT " + sp)
+            except: pass
+        return r
+    except Exception as e:
+        if sp:
+            try: _B(self, "ROLLBACK TO SAVEPOINT " + sp)
+            except:
+                try: _original_rollback(self)
+                except: pass
+        elif "transaction is aborted" in str(e).lower() or "infailedsqltransaction" in str(e).lower():
+            try: _original_rollback(self)
+            except: pass
+        raise
+
+from frappe.database.postgres.database import PostgresDatabase as _fp_PGDb
+_fp_PGDb.sql = patched_sql
+print("frappe_pg: per-query savepoint patch applied")
+'''
+            with open(path, 'a') as f:
+                f.write(NEW_CODE)
+            print('frappe_pg: savepoint patch appended')
+        else:
+            print('frappe_pg: savepoint patch already present')
+        PYEOF
+        python3 /tmp/patch_frappe_pg.py 2>/dev/null || true
         if [ ! -d "sites/${site_name}" ]; then
           echo "Creating new site with PostgreSQL (frappe_pg not active yet)..."
           bench new-site ${site_name} \\
@@ -533,7 +656,7 @@ fi
 # Check if running with sudo (needed for hosts file management)
 if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}❌ This script must be run with sudo for hosts file management${NC}"
-    echo -e "${YELLOW}💡 Please run: sudo ./generate_frappe_docker_local_optimized.sh${NC}"
+    echo -e "${YELLOW}💡 Please run: sudo ./generate_frappe_docker_local.sh${NC}"
     exit 1
 fi
 
