@@ -414,64 +414,65 @@ ${app_download_cmds}${pip_install_cmd}
         # ---------------------------------------------------------------------------
         GUARD = '# _FRAPPE_PG_SAVEPOINT_PATCH_APPLIED_'
         if GUARD not in content:
-            NEW_CODE = '''
-# _FRAPPE_PG_SAVEPOINT_PATCH_APPLIED_
-# Per-query savepoint override injected by generate script.
-# This replaces the old retry-loop patched_sql with one that uses
-# SAVEPOINT / ROLLBACK TO SAVEPOINT so a single failing query does not
-# abort the surrounding transaction (matches MySQL behaviour).
-import threading as _fp_tl
-import psycopg2.extensions as _fp_pgext
-_fp_sp = _fp_tl.local()
+            import textwrap
+            NEW_CODE = textwrap.dedent("""
+                # _FRAPPE_PG_SAVEPOINT_PATCH_APPLIED_
+                # Per-query savepoint override injected by generate script.
+                # This replaces the old retry-loop patched_sql with one that uses
+                # SAVEPOINT / ROLLBACK TO SAVEPOINT so a single failing query does not
+                # abort the surrounding transaction (matches MySQL behaviour).
+                import threading as _fp_tl
+                import psycopg2.extensions as _fp_pgext
+                _fp_sp = _fp_tl.local()
 
-def _fp_next_sp():
-    if not hasattr(_fp_sp, "n"): _fp_sp.n = 0
-    _fp_sp.n = (_fp_sp.n + 1) % 1000000
-    return "frappe_pg_sp_{}".format(_fp_sp.n)
+                def _fp_next_sp():
+                    if not hasattr(_fp_sp, "n"): _fp_sp.n = 0
+                    _fp_sp.n = (_fp_sp.n + 1) % 1000000
+                    return "frappe_pg_sp_{}".format(_fp_sp.n)
 
-def _fp_in_txn(conn):
-    try: return conn.status == _fp_pgext.STATUS_IN_TRANSACTION
-    except: return False
+                def _fp_in_txn(conn):
+                    try: return conn.status == _fp_pgext.STATUS_IN_TRANSACTION
+                    except: return False
 
-def patched_sql(self, query, values=(), *args, **kwargs):
-    import frappe.database.database
-    from frappe.database.postgres.database import modify_query, modify_values as _fp_mv
-    from frappe_pg.postgres.query_transformers import apply_all_query_transformations
-    t = apply_all_query_transformations(query)
-    q = modify_query(t)
-    v = _fp_mv(values)
-    if not v: q = q.replace("%", "%%")
-    _B = frappe.database.database.Database.sql
-    q_up = q.strip().upper()
-    ctrl = any(q_up.startswith(k) for k in (
-        "BEGIN","COMMIT","ROLLBACK","SAVEPOINT","RELEASE SAVEPOINT","SET ","SET\\t"))
-    sp = None
-    _db_conn = getattr(self, 'conn', getattr(self, 'con', None))
-    if not ctrl and _fp_in_txn(_db_conn):
-        sp = _fp_next_sp()
-        try: _B(self, "SAVEPOINT " + sp)
-        except: sp = None
-    try:
-        r = _B(self, q, v, *args, **kwargs)
-        if sp:
-            try: _B(self, "RELEASE SAVEPOINT " + sp)
-            except: pass
-        return r
-    except Exception as e:
-        if sp:
-            try: _B(self, "ROLLBACK TO SAVEPOINT " + sp)
-            except:
-                try: _original_rollback(self)
-                except: pass
-        elif "transaction is aborted" in str(e).lower() or "infailedsqltransaction" in str(e).lower():
-            try: _original_rollback(self)
-            except: pass
-        raise
+                def patched_sql(self, query, values=(), *args, **kwargs):
+                    import frappe.database.database
+                    from frappe.database.postgres.database import modify_query, modify_values as _fp_mv
+                    from frappe_pg.postgres.query_transformers import apply_all_query_transformations
+                    t = apply_all_query_transformations(query)
+                    q = modify_query(t)
+                    v = _fp_mv(values)
+                    if not v: q = q.replace("%", "%%")
+                    _B = frappe.database.database.Database.sql
+                    q_up = q.strip().upper()
+                    ctrl = any(q_up.startswith(k) for k in (
+                        "BEGIN","COMMIT","ROLLBACK","SAVEPOINT","RELEASE SAVEPOINT","SET ","SET\\t"))
+                    sp = None
+                    _db_conn = getattr(self, 'conn', getattr(self, 'con', None))
+                    if not ctrl and _fp_in_txn(_db_conn):
+                        sp = _fp_next_sp()
+                        try: _B(self, "SAVEPOINT " + sp)
+                        except: sp = None
+                    try:
+                        r = _B(self, q, v, *args, **kwargs)
+                        if sp:
+                            try: _B(self, "RELEASE SAVEPOINT " + sp)
+                            except: pass
+                        return r
+                    except Exception as e:
+                        if sp:
+                            try: _B(self, "ROLLBACK TO SAVEPOINT " + sp)
+                            except:
+                                try: _original_rollback(self)
+                                except: pass
+                        elif "transaction is aborted" in str(e).lower() or "infailedsqltransaction" in str(e).lower():
+                            try: _original_rollback(self)
+                            except: pass
+                        raise
 
-from frappe.database.postgres.database import PostgresDatabase as _fp_PGDb
-_fp_PGDb.sql = patched_sql
-print("frappe_pg: per-query savepoint patch applied")
-'''
+                from frappe.database.postgres.database import PostgresDatabase as _fp_PGDb
+                _fp_PGDb.sql = patched_sql
+                print("frappe_pg: per-query savepoint patch applied")
+            """).lstrip("\n")
             with open(path, 'a') as f:
                 f.write(NEW_CODE)
             print('frappe_pg: savepoint patch appended')
