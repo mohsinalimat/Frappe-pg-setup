@@ -438,10 +438,17 @@ ${app_download_cmds}${pip_install_cmd}
                     import frappe.database.database
                     from frappe.database.postgres.database import modify_query, modify_values as _fp_mv
                     from frappe_pg.postgres.query_transformers import apply_all_query_transformations
-                    t = apply_all_query_transformations(query)
-                    q = modify_query(t)
-                    v = _fp_mv(values)
-                    if not v: q = q.replace("%", "%%")
+                    if isinstance(values, dict):
+                        # Query from PyPika/query_builder is already valid PostgreSQL.
+                        # apply_all_query_transformations (sqlglot) mangles %(name)s
+                        # named params → %(name) (strips 's'), causing ValueError: incomplete format.
+                        q = query
+                        v = values
+                    else:
+                        t = apply_all_query_transformations(query)
+                        q = modify_query(t)
+                        v = _fp_mv(values)
+                        if not v: q = q.replace("%", "%%")
                     _B = frappe.database.database.Database.sql
                     q_up = q.strip().upper()
                     ctrl = any(q_up.startswith(k) for k in (
