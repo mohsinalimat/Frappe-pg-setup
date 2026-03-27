@@ -138,7 +138,7 @@ generate_docker_compose() {
     # is never created. Pip-installing does NOT activate SQL patches (those fire only when
     # frappe_pg is added via install-app), so schema creation remains unaffected.
     if [[ "$db_type" == "postgres" ]]; then
-        app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && git clone https://github.com/excel-azmin/frappe_pg.git apps/frappe_pg || true
+        app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && git clone https://github.com/NileshPBrainmine/frappe_pg.git apps/frappe_pg || true
         ./env/bin/pip install -q -e apps/frappe_pg
         ./env/bin/pip install -q "sqlglot>=20.0.0"
 '
