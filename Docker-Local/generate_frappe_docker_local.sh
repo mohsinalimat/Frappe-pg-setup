@@ -386,6 +386,23 @@ ${app_download_cmds}${pip_install_cmd}
                 )
                 print('frappe_pg: enhanced _exec robustness in db_functions.py')
             open(df_path, 'w').write(df_content)
+            print('frappe_pg: patched db_functions.py')
+
+        # --- Fix query_transformers.py for robust DDL protection ---
+        qt_path = 'apps/frappe_pg/frappe_pg/postgres/query_transformers.py'
+        if os.path.exists(qt_path):
+            qt_content = open(qt_path).read()
+            target = "if _FUNC_DDL_RE.search(query):"
+            if target in qt_content:
+                # Use robust lstrip startswith check
+                replacement = (
+                    "    # Check for DDL using lstrip to handle leading newlines\n"
+                    "    sq_strip = query.lstrip().lower()\n"
+                    "    if sq_strip.startswith(('create ', 'drop ', 'alter ', 'truncate ', 'grant ', 'revoke ')):\n"
+                )
+                qt_content = qt_content.replace(target, replacement)
+                open(qt_path, 'w').write(qt_content)
+                print('frappe_pg: patched query_transformers.py (DDL protection)')
 
         # ---------------------------------------------------------------------------
         # Patch A: fix patched_rollback to accept save_point= kwarg (frappe v15)
