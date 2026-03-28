@@ -138,7 +138,13 @@ generate_docker_compose() {
     # is never created. Pip-installing does NOT activate SQL patches (those fire only when
     # frappe_pg is added via install-app), so schema creation remains unaffected.
     if [[ "$db_type" == "postgres" ]]; then
-        app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && git clone https://github.com/NileshPBrainmine/frappe_pg.git apps/frappe_pg || true
+        app_download_cmds+='        if [ -d "apps/frappe_pg" ]; then
+            echo "  Updating frappe_pg..."
+            cd apps/frappe_pg && git pull -q && cd ../..
+        else
+            echo "  Cloning frappe_pg..."
+            git clone -q https://github.com/NileshPBrainmine/frappe_pg.git apps/frappe_pg
+        fi
         ./env/bin/pip install -q -e apps/frappe_pg
         ./env/bin/pip install -q "sqlglot>=20.0.0"
 '
@@ -357,15 +363,32 @@ EOF
         bench set-config -gp socketio_port 9000
 ${app_download_cmds}${pip_install_cmd}
         cat > /tmp/patch_frappe_pg.py << 'PYEOF'
+        import os
+        
+        # --- Fix database_patches.py ---
         path = 'apps/frappe_pg/frappe_pg/postgres/database_patches.py'
         content = open(path).read()
         content = content.replace('self.con)', 'getattr(self, "conn", getattr(self, "con", None)))')
 
+        # --- Fix db_functions.py ---
+        df_path = 'apps/frappe_pg/frappe_pg/postgres/db_functions.py'
+        if os.path.exists(df_path):
+            df_content = open(df_path).read()
+            # 1. Remove failing time(ts) function if it exists
+            if 'CREATE OR REPLACE FUNCTION time(ts timestamp)' in df_content:
+                df_content = df_content.replace('"""\n    CREATE OR REPLACE FUNCTION time(ts timestamp)', '/* time(ts) omitted */\n    """')
+                print('frappe_pg: removed failing time(ts) function from db_functions.py')
+            # 2. Improve _exec logging and add rollback to pinpoint and recover from failures
+            if 'print(f"  ⚠  Warning: {str(e)[:120]}")' in df_content and 'query_peek' not in df_content:
+                df_content = df_content.replace(
+                    'print(f"  ⚠  Warning: {str(e)[:120]}")',
+                    'query_peek = sql[:100].replace("\\n", " ") + "..." if len(sql) > 100 else sql.replace("\\n", " ")\n                if _db_conn: _db_conn.rollback()\n                else: frappe.db.rollback()\n                print(f"  ⚠  Warning: {str(e)[:120]}")\n                print(f"     at query: {query_peek}")'
+                )
+                print('frappe_pg: enhanced _exec robustness in db_functions.py')
+            open(df_path, 'w').write(df_content)
+
         # ---------------------------------------------------------------------------
         # Patch A: fix patched_rollback to accept save_point= kwarg (frappe v15)
-        # Frappe calls frappe.db.rollback(save_point=name) for savepoint rollbacks.
-        # Without this the setup wizard fails with:
-        #   TypeError: patched_rollback() got an unexpected keyword argument 'save_point'
         # ---------------------------------------------------------------------------
         old_sig = 'def patched_rollback(self):'
         new_sig = 'def patched_rollback(self, *, save_point=None):'
