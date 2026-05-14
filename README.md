@@ -12,6 +12,7 @@ This project gives you ready-made shell scripts that:
 - Download and configure everything automatically
 - Ask you simple Yes/No questions during setup
 - Create a working ERPNext site in under 10 minutes
+- Install **multiple custom apps** in a single run — including **private GitHub repositories**
 
 No manual Docker file editing required.
 
@@ -102,7 +103,38 @@ During setup, the script asks you which apps to install:
 | **UI Theme** | Custom branding / color theme | Optional (y/n) |
 | **HRMS** | HR & Payroll management | Optional (y/n) |
 | **Raven** | Team chat messaging | Optional (y/n) |
-| **Custom App** | Any app from a git URL | Optional (y/n) |
+| **Custom Apps (×N)** | Any number of apps from git URLs — public or private | Optional (loop) |
+
+### Installing Custom Apps
+
+The script loops so you can add **as many custom apps as you need**:
+
+```
+Add a custom app? (y/n): y
+  App name:  grand_renovations_app
+  Git URL:   https://github.com/yourorg/grand_renovations_app.git
+  Branch:    (leave blank for default)
+  Private?   y
+Add another custom app? (y/n): y
+  App name:  Frappe_Assistant_Core
+  Git URL:   https://github.com/buildswithpaul/Frappe_Assistant_Core.git
+  Branch:    (leave blank)
+  Private?   n
+Add another custom app? (y/n): n
+```
+
+### Private Repository Support
+
+When you mark an app as **private**, the script handles SSH authentication automatically:
+
+1. Checks for an existing SSH key (`~/.ssh/id_ed25519`, `~/.ssh/id_rsa`)
+2. Generates a new key if none exists — saved to `~/.ssh/id_frappe_docker`
+3. Displays the **public key** — you copy it and add it to GitHub once:
+   > GitHub → Settings → SSH and GPG keys → New SSH key
+4. Tests the SSH connection to GitHub
+5. Mounts the key securely (read-only) into the setup container
+
+The `https://github.com/…` URL is **automatically converted** to `git@github.com:…` — no manual URL editing needed.
 
 ---
 
@@ -142,6 +174,8 @@ During setup, the script asks you which apps to install:
 | Domain | `yoursite.localhost` | `yourdomain.com` |
 | Internet access | No (local only) | Yes |
 | Sudo required | Optional (Mac) / Yes (Linux) | Yes |
+| Custom apps | Multiple, public or private | Multiple, public or private |
+| Private repo auth | SSH key (auto-generated) | SSH key (auto-generated) |
 
 ---
 
@@ -252,6 +286,27 @@ docker logs traefik --tail 50
 nslookup yourdomain.com
 ```
 
+### Private repo — "Permission denied (publickey)"
+```bash
+# Test SSH connection to GitHub manually
+ssh -T git@github.com
+
+# If it fails, verify the public key is added to GitHub:
+# GitHub → Settings → SSH and GPG keys
+cat ~/.ssh/id_frappe_docker.pub   # copy this into GitHub
+
+# Re-run the setup — it will detect the existing key and try again
+```
+
+### Custom app not installing
+```bash
+# Check create-site container logs
+docker logs SITE_NAME-create-site --tail 50
+
+# Verify the app name matches the folder name inside the container
+docker exec SITE_NAME-app ls apps/
+```
+
 ---
 
 ## Multiple Sites
@@ -288,18 +343,27 @@ docker run --rm \
 ```
 frappe-docker-manager/
 ├── Docker-Local/                          # Local development tools
-│   ├── generate_frappe_docker_local.sh    # Create a local site
-│   ├── docker-manager-local.sh            # Manage local containers
+│   ├── generate_frappe_docker_local.sh    # Create a local site (main script)
+│   ├── docker-manager-local.sh            # Manage local containers (menu)
+│   ├── setup-traefik-local-mac-no-sudo.sh # Traefik for Mac — no sudo (recommended)
+│   ├── setup-traefik-local-mac.sh         # Traefik for Mac — with sudo
 │   ├── setup-traefik-local.sh             # Traefik for Linux
-│   ├── setup-traefik-local-mac.sh         # Traefik for Mac (sudo)
-│   ├── setup-traefik-local-mac-no-sudo.sh # Traefik for Mac (no sudo)
+│   ├── CHANGELOG.md                       # Version history
+│   ├── QUICK_REFERENCE.md                 # Command cheat sheet
 │   └── README.md                          # Full local setup guide
 │
 ├── Docker-on-VPS/                         # VPS / production tools
-│   ├── generate_frappe_docker.sh          # Create a VPS site
-│   ├── docker-manager.sh                  # Manage VPS containers
+│   ├── generate_frappe_docker.sh          # Create a VPS site (main script)
+│   ├── docker-manager.sh                  # Manage VPS containers (menu)
 │   └── README.md                          # Full VPS setup guide
 │
+├── others/                                # Security & utility tools
+│   ├── docker-security-tools.sh           # Trivy / Bench / Falco security audit
+│   ├── secure-docker-setup.sh             # Hardened setup (non-root, secrets)
+│   ├── fix_traefik_https.sh               # HTTPS troubleshooter
+│   └── manage-hosts.sh                    # /etc/hosts file manager
+│
+├── PROJECT_CONTEXT.md                     # Full technical architecture reference
 └── README.md                              # This file
 ```
 
@@ -309,6 +373,9 @@ frappe-docker-manager/
 
 - **Local Development**: [Docker-Local/README.md](Docker-Local/README.md)
 - **VPS / Cloud Server**: [Docker-on-VPS/README.md](Docker-on-VPS/README.md)
+- **Quick Command Reference**: [Docker-Local/QUICK_REFERENCE.md](Docker-Local/QUICK_REFERENCE.md)
+- **Full Technical Architecture**: [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md)
+- **Version History**: [Docker-Local/CHANGELOG.md](Docker-Local/CHANGELOG.md)
 
 ---
 
