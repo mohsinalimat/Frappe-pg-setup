@@ -105,6 +105,49 @@ manage_hosts_entry() {
     esac
 }
 
+# Check for / generate an SSH key for private GitHub repos.
+# Prints the path to the private key file on stdout (last line).
+setup_ssh_for_private_repos() {
+    local ssh_key_file=""
+    echo "" >&2
+    echo -e "${BLUE}🔐 Private repository access requires an SSH key${NC}" >&2
+    for key in "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_rsa" "$HOME/.ssh/id_frappe_docker"; do
+        if [[ -f "$key" ]]; then
+            ssh_key_file="$key"
+            echo -e "${GREEN}✅ Found existing SSH key: $ssh_key_file${NC}" >&2
+            break
+        fi
+    done
+    if [[ -z "$ssh_key_file" ]]; then
+        echo "No SSH key found. Generating a new ed25519 key..." >&2
+        ssh-keygen -t ed25519 -C "frappe-docker-deploy" -N "" -f "$HOME/.ssh/id_frappe_docker" -q
+        ssh_key_file="$HOME/.ssh/id_frappe_docker"
+        echo -e "${GREEN}✅ Generated: $ssh_key_file${NC}" >&2
+    fi
+    local pub_key="${ssh_key_file}.pub"
+    echo "" >&2
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    echo -e "${YELLOW}  Add this SSH public key to GitHub to access private repositories:${NC}" >&2
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    cat "$pub_key" >&2
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    echo "" >&2
+    echo "  1. Copy the key above (the entire ssh-ed25519 / ssh-rsa line)" >&2
+    echo "  2. GitHub.com → Settings → SSH and GPG keys → New SSH key" >&2
+    echo "  3. Paste and click 'Add SSH key'" >&2
+    echo "" >&2
+    read -p "Press Enter once you have added the key to GitHub (or it was already there)..." >&2
+    echo "Testing SSH connection to GitHub..." >&2
+    local test_result
+    test_result=$(ssh -T git@github.com -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$ssh_key_file" 2>&1)
+    if echo "$test_result" | grep -q "successfully authenticated"; then
+        echo -e "${GREEN}✅ GitHub SSH connection verified!${NC}" >&2
+    else
+        echo -e "${YELLOW}⚠️  Could not auto-verify — continuing (test later: ssh -T git@github.com)${NC}" >&2
+    fi
+    echo "$ssh_key_file"
+}
+
 # Generate the docker-compose.yml file
 generate_docker_compose() {
     local safe_site_name=$1
@@ -114,6 +157,7 @@ generate_docker_compose() {
     local pg_root_user=${5:-frappe_root}
     local pg_root_password=${6:-admin}
     local selected_apps=${7:-""}
+    local ssh_key_file=${8:-""}
     local compose_file="$safe_site_name/${safe_site_name}-docker-compose.yml"
 
     # DB connection details
@@ -156,14 +200,14 @@ generate_docker_compose() {
             ui_theme)
                 app_download_cmds+='        [ ! -d "apps/ui_theme" ] && bench get-app ui_theme https://github.com/DarshanaPBrainmine/ui_theme_erpnext.git || true
 '
-                pip_install_list+=" apps/ui_theme"
+                pip_install_list+=" -e apps/ui_theme"
                 app_install_cmds+="        bench --site ${site_name} install-app ui_theme || true
 "
                 ;;
             hrms)
                 app_download_cmds+='        [ ! -d "apps/hrms" ] && bench get-app hrms https://github.com/frappe/hrms.git --branch version-15 || true
 '
-                pip_install_list+=" apps/hrms"
+                pip_install_list+=" -e apps/hrms"
                 app_install_cmds+="        echo \"Installing HRMS...\"
         bench --site ${site_name} install-app hrms || true
         echo \"Running migrate to resolve any HRMS-ERPNext table conflicts...\"
@@ -173,14 +217,14 @@ generate_docker_compose() {
             raven)
                 app_download_cmds+='        [ ! -d "apps/raven" ] && bench get-app raven https://github.com/The-Commit-Company/raven.git || true
 '
-                pip_install_list+=" apps/raven"
+                pip_install_list+=" -e apps/raven"
                 app_install_cmds+="        bench --site ${site_name} install-app raven || true
 "
                 ;;
-            custom:*)
-                local cname; cname=$(echo "$token" | cut -d: -f2)
-                local curl; curl=$(echo "$token" | cut -d: -f3)
-                local cbranch; cbranch=$(echo "$token" | cut -d: -f4)
+            'custom|'*)
+                local cname; cname=$(echo "$token" | cut -d'|' -f2)
+                local curl; curl=$(echo "$token" | cut -d'|' -f3)
+                local cbranch; cbranch=$(echo "$token" | cut -d'|' -f4)
                 if [[ -n "$cbranch" ]]; then
                     app_download_cmds+="        [ ! -d \"apps/${cname}\" ] && bench get-app ${cname} ${curl} --branch ${cbranch} || true
 "
@@ -188,7 +232,7 @@ generate_docker_compose() {
                     app_download_cmds+="        [ ! -d \"apps/${cname}\" ] && bench get-app ${cname} ${curl} || true
 "
                 fi
-                pip_install_list+=" apps/${cname}"
+                pip_install_list+=" -e apps/${cname}"
                 app_install_cmds+="        bench --site ${site_name} install-app ${cname} || true
 "
                 ;;
@@ -198,8 +242,26 @@ generate_docker_compose() {
     # Build pip install command
     local pip_install_cmd=""
     if [[ -n "$pip_install_list" ]]; then
-        pip_install_cmd="        ./env/bin/pip install -q -e${pip_install_list}
+        pip_install_cmd="        ./env/bin/pip install -q${pip_install_list}
 "
+    fi
+
+    # Build SSH setup snippet for the create-site container
+    local ssh_setup_cmd=""
+    local ssh_key_dir=""
+    local ssh_key_name=""
+    if [[ -n "$ssh_key_file" && -f "$ssh_key_file" ]]; then
+        ssh_key_name=$(basename "$ssh_key_file")
+        ssh_key_dir=$(dirname "$ssh_key_file")
+        ssh_setup_cmd='        if [ -f "/tmp/host_ssh/'"$ssh_key_name"'" ]; then
+            mkdir -p /home/frappe/.ssh
+            cp "/tmp/host_ssh/'"$ssh_key_name"'" /home/frappe/.ssh/id_ed25519
+            chmod 700 /home/frappe/.ssh
+            chmod 600 /home/frappe/.ssh/id_ed25519
+            ssh-keyscan -H github.com >> /home/frappe/.ssh/known_hosts 2>/dev/null || true
+            echo "SSH key configured for private repository access"
+        fi
+'
     fi
 
     # Load local config to check for custom ports
@@ -342,6 +404,15 @@ EOF
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
       - apps:/home/frappe/frappe-bench/apps
+EOF
+    # Mount host SSH directory read-only for private repo access
+    if [[ -n "$ssh_key_dir" ]]; then
+        cat >> "$compose_file" << EOF
+      - ${ssh_key_dir}:/tmp/host_ssh:ro
+EOF
+    fi
+
+    cat >> "$compose_file" << EOF
     entrypoint:
       - bash
       - -c
@@ -361,10 +432,10 @@ EOF
         bench set-config -g redis_queue "redis://redis:6379"
         bench set-config -g redis_socketio "redis://redis:6379"
         bench set-config -gp socketio_port 9000
-${app_download_cmds}${pip_install_cmd}
+${ssh_setup_cmd}${app_download_cmds}${pip_install_cmd}
         cat > /tmp/patch_frappe_pg.py << 'PYEOF'
         import os
-        
+
         # --- Fix database_patches.py ---
         path = 'apps/frappe_pg/frappe_pg/postgres/database_patches.py'
         content = open(path).read()
@@ -574,7 +645,7 @@ EOF
         bench set-config -g redis_queue "redis://redis:6379"
         bench set-config -g redis_socketio "redis://redis:6379"
         bench set-config -gp socketio_port 9000
-${app_download_cmds}${pip_install_cmd}
+${ssh_setup_cmd}${app_download_cmds}${pip_install_cmd}
         if [ ! -d "sites/${site_name}" ]; then
           echo "Creating new site..."
           bench new-site ${site_name} \\
@@ -839,19 +910,35 @@ read -p "Install HRMS (HR & Payroll)? (y/n): " install_hrms
 read -p "Install Raven (Chat)? (y/n): " install_raven
 [[ "$install_raven" =~ ^[Yy]$ ]] && selected_apps+=" raven"
 
+has_private_repos=false
 read -p "Add a custom app? (y/n): " add_custom
-if [[ "$add_custom" =~ ^[Yy]$ ]]; then
+while [[ "$add_custom" =~ ^[Yy]$ ]]; do
     read -p "  App name: " custom_name
-    read -p "  Git URL: " custom_url
+    read -p "  Git URL (HTTPS or SSH): " custom_url
     read -p "  Branch (leave blank for default): " custom_branch
-    if [[ -n "$custom_branch" ]]; then
-        selected_apps+=" custom:${custom_name}:${custom_url}:${custom_branch}"
-    else
-        selected_apps+=" custom:${custom_name}:${custom_url}"
+    read -p "  Is this a private repository? (y/n): " is_private_repo
+    if [[ "$is_private_repo" =~ ^[Yy]$ ]]; then
+        has_private_repos=true
+        if [[ "$custom_url" =~ ^https://github\.com/ ]]; then
+            custom_url="git@github.com:${custom_url#https://github.com/}"
+            echo -e "  ${BLUE}Using SSH URL: ${custom_url}${NC}"
+        fi
     fi
-fi
+    if [[ -n "$custom_branch" ]]; then
+        selected_apps+=" custom|${custom_name}|${custom_url}|${custom_branch}"
+    else
+        selected_apps+=" custom|${custom_name}|${custom_url}"
+    fi
+    read -p "Add another custom app? (y/n): " add_custom
+done
 selected_apps="${selected_apps# }"
 echo ""
+
+# Setup SSH key if any private repos were selected
+ssh_key_file=""
+if [[ "$has_private_repos" == "true" ]]; then
+    ssh_key_file=$(setup_ssh_for_private_repos)
+fi
 
 # Create .env file
 cat > "$safe_site_name/.env" << EOF
@@ -862,7 +949,7 @@ SITES=${site_name}
 EOF
 
 # Generate docker-compose
-generate_docker_compose "$safe_site_name" "$site_name" "$db_type" "$external_pg" "$pg_root_user" "$pg_root_password" "$selected_apps"
+generate_docker_compose "$safe_site_name" "$site_name" "$db_type" "$external_pg" "$pg_root_user" "$pg_root_password" "$selected_apps" "$ssh_key_file"
 
 # Start containers
 echo -e "${GREEN}Starting your optimized Frappe/ERPNext site...${NC}"

@@ -196,14 +196,17 @@ sudo docker logs SITE_NAME-redis
 
 ### Application Logs (Inside Container)
 ```bash
-# Supervisor logs
+# Supervisor daemon log
 tail -f /home/frappe/supervisor/logs/supervisord.log
 
-# Frappe web logs
-tail -f /home/frappe/supervisor/logs/frappe-web.log
+# Web server log
+tail -f /home/frappe/supervisor/logs/web.log
 
-# Worker logs
-tail -f /home/frappe/supervisor/logs/frappe-worker-default.log
+# Background worker log
+tail -f /home/frappe/supervisor/logs/worker.log
+
+# Scheduler log
+tail -f /home/frappe/supervisor/logs/schedule.log
 ```
 
 ## 🔒 Security Commands
@@ -233,6 +236,37 @@ sudo docker exec SITE_NAME-app ping db
 sudo docker exec SITE_NAME-app ping redis
 ```
 
+## 📦 Custom Apps — Quick Reference
+
+### Multiple apps in one run
+```
+Add a custom app? (y/n): y
+  App name: my_app
+  Git URL:  https://github.com/org/my_app.git
+  Branch:   main
+  Private?  n
+Add another custom app? (y/n): y
+  App name: private_app
+  Git URL:  https://github.com/org/private_app.git
+  Branch:   (leave blank)
+  Private?  y        ← URL auto-converts to git@github.com:org/private_app.git
+Add another custom app? (y/n): n
+```
+
+### Private repo SSH key (generated once)
+```bash
+# Key is stored at (one of):
+~/.ssh/id_ed25519
+~/.ssh/id_rsa
+~/.ssh/id_frappe_docker     # auto-generated if none found
+
+# Add the public key to GitHub:
+# GitHub → Settings → SSH and GPG keys → New SSH key
+cat ~/.ssh/id_frappe_docker.pub   # copy this output
+```
+
+---
+
 ## 💡 Pro Tips
 
 1. **Use docker-manager-local.sh** for most operations - it's user-friendly
@@ -241,6 +275,7 @@ sudo docker exec SITE_NAME-app ping redis
 4. **Monitor resource usage** with `docker stats`
 5. **Keep Traefik running** - it handles routing for all sites
 6. **Use .localhost domains** for automatic hosts file management
+7. **Multiple custom apps** — just keep answering `y` when asked "Add another custom app?"
 
 ## 📞 Getting Help
 

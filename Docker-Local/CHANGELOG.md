@@ -1,5 +1,21 @@
 # Changelog - Docker-Local
 
+## [1.2.0] - 2026-05-14
+
+### 🚀 New Features
+- **Multiple Custom Apps**: Script now loops — you can install any number of custom apps in a single run, not just one
+- **Private Repository Support**: New SSH key workflow for private GitHub repos — auto-detects or generates an SSH key, displays the public key to add to GitHub, tests the connection, and mounts the key into the `create-site` container
+- **Auto HTTPS→SSH URL Conversion**: When you mark an app as private, any `https://github.com/…` URL is automatically converted to `git@github.com:…` so authentication works correctly
+
+### 🐛 Bug Fixes
+- **Custom App URL Parsing (Critical)**: Fixed token separator from `:` to `|` — previously `https://github.com/org/app.git` was split by the colon in `://`, causing `bench get-app` to receive only `https` as the URL instead of the full path. All custom apps were silently broken.
+- **pip Editable Install**: Fixed `pip install -e apps/a apps/b` — only the first app was installed in editable mode. Now each app gets its own `-e` flag: `pip install -e apps/a -e apps/b -e apps/c`.
+
+### 🔧 Improvements
+- **PostgreSQL**: `frappe_pg` is now updated via `git pull` on re-runs (previously it was only cloned once and never updated)
+
+---
+
 ## [1.1.0] - 2024-12-19
 
 ### 🚀 New Features

@@ -647,11 +647,25 @@ PHASE 3: DAILY MANAGEMENT
 Apps are internally encoded as tokens that drive the installation logic:
 
 ```
-ui_theme               → Install UI theme app
-hrms                   → Install HRMS from frappe/hrms
-raven                  → Install Raven from The-Commit-Company/raven
-custom:NAME:URL:BRANCH → Install custom app from git URL on specified branch
+ui_theme                  → Install UI theme app
+hrms                      → Install HRMS from frappe/hrms
+raven                     → Install Raven from The-Commit-Company/raven
+custom|NAME|URL|BRANCH    → Install custom app from git URL on specified branch
+custom|NAME|URL           → Install custom app (default branch)
 ```
+
+> **Note**: The separator for custom app tokens is `|` (pipe), not `:`. This avoids ambiguity with the colon inside HTTPS (`https://`) and SSH (`git@github.com:org/repo`) URLs.
+
+### Multiple Custom Apps
+
+The script loops — users can add as many custom apps as needed. Each token is space-separated in the `selected_apps` string and iterated with `for token in $selected_apps`.
+
+### Private Repository Support
+
+When a custom app is marked private:
+1. HTTPS URL is automatically converted to SSH: `https://github.com/org/app.git` → `git@github.com:org/app.git`
+2. The host SSH key directory (`dirname $ssh_key_file`) is mounted as `/tmp/host_ssh:ro` in the `create-site` container
+3. The container copies the key to `/home/frappe/.ssh/id_ed25519`, sets permissions, and runs `ssh-keyscan github.com` before any `bench get-app`
 
 ### Installation Sequence (Critical Ordering)
 
@@ -1059,34 +1073,31 @@ echo -e "${RED}✗ Error: Docker not running${NC}"
 
 ## 17. Active Development State
 
-### Current Git Status (as of 2026-03-27)
+### Current Git Status (as of 2026-05-14)
 
 ```
 Branch: main
 
-Modified (uncommitted):
-  M  Docker-Local/generate_frappe_docker_local.sh
-
 Recent Commits:
-  a8058db  feat: clone frappe_pg from NileshPBrainmine fork, remove inline patch
-  d48ff61  refactor: Explicitly use venv pip for package installations
-  deeb718  fix: Update frappe_pg patching to escape SQL '%' and add save_point support for Frappe v15
-  425d0c4  syntax error of the scripts
-  b72fe49  frappe_pg module not found issue resolve
+  6ecaf3e  fix: patch query_transformers.py to implement robust DDL protection
+  88fcd41  feat: update frappe_pg cloning logic and add robust patching for db_functions.py
+  d52b35d  build: Update frappe_pg git clone URL from excel-azmin to NileshPBrainmine
+  5470c39  fix: Skip query transformations for dictionary values to prevent mangling PyPika named parameters
+  856d506  indent NEW_CODE in heredoc to prevent YAML block scalar break
 ```
 
 ### Active Work Area
 
-- `generate_frappe_docker_local.sh` — has uncommitted changes
-- Focus: PostgreSQL support stability (frappe_pg integration)
-- Recent fixes: venv pip path, SQL `%` escaping in Frappe v15, `save_point` rollback support
+Both `generate_frappe_docker_local.sh` and `generate_frappe_docker.sh` (VPS) are up to date.
 
 ### Known Considerations
 
 - `frappe_pg` is cloned from NileshPBrainmine fork (not official frappe org)
 - PostgreSQL setup requires specific ordering: pip install → new-site → install-app
 - Frappe v15 requires `%` escaping in raw SQL queries (PostgreSQL driver behavior)
-- Virtual environment pip (`~/.local/bin/pip`) must be used explicitly, not system pip
+- Virtual environment pip (`./env/bin/pip`) must be used explicitly, not system pip
+- Custom app token separator is `|` (pipe) — colons are reserved for SSH/HTTPS URLs
+- SSH private key is mounted read-only at `/tmp/host_ssh` inside the create-site container; never embedded in the compose file
 
 ---
 

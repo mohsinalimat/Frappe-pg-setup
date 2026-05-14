@@ -39,6 +39,49 @@ validate_domain() {
     return 0
 }
 
+# Check for / generate an SSH key for private GitHub repos.
+# Prints the path to the private key file on stdout (last line).
+setup_ssh_for_private_repos() {
+    local ssh_key_file=""
+    echo "" >&2
+    echo -e "${BLUE}🔐 Private repository access requires an SSH key${NC}" >&2
+    for key in "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_rsa" "$HOME/.ssh/id_frappe_docker"; do
+        if [[ -f "$key" ]]; then
+            ssh_key_file="$key"
+            echo -e "${GREEN}✅ Found existing SSH key: $ssh_key_file${NC}" >&2
+            break
+        fi
+    done
+    if [[ -z "$ssh_key_file" ]]; then
+        echo "No SSH key found. Generating a new ed25519 key..." >&2
+        ssh-keygen -t ed25519 -C "frappe-docker-deploy" -N "" -f "$HOME/.ssh/id_frappe_docker" -q
+        ssh_key_file="$HOME/.ssh/id_frappe_docker"
+        echo -e "${GREEN}✅ Generated: $ssh_key_file${NC}" >&2
+    fi
+    local pub_key="${ssh_key_file}.pub"
+    echo "" >&2
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    echo -e "${YELLOW}  Add this SSH public key to GitHub to access private repositories:${NC}" >&2
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    cat "$pub_key" >&2
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    echo "" >&2
+    echo "  1. Copy the key above (the entire ssh-ed25519 / ssh-rsa line)" >&2
+    echo "  2. GitHub.com → Settings → SSH and GPG keys → New SSH key" >&2
+    echo "  3. Paste and click 'Add SSH key'" >&2
+    echo "" >&2
+    read -p "Press Enter once you have added the key to GitHub (or it was already there)..." >&2
+    echo "Testing SSH connection to GitHub..." >&2
+    local test_result
+    test_result=$(ssh -T git@github.com -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$ssh_key_file" 2>&1)
+    if echo "$test_result" | grep -q "successfully authenticated"; then
+        echo -e "${GREEN}✅ GitHub SSH connection verified!${NC}" >&2
+    else
+        echo -e "${YELLOW}⚠️  Could not auto-verify — continuing (test later: ssh -T git@github.com)${NC}" >&2
+    fi
+    echo "$ssh_key_file"
+}
+
 # Generate the docker-compose.yml file
 generate_docker_compose() {
     local safe_site_name=$1
@@ -49,6 +92,7 @@ generate_docker_compose() {
     local pg_root_user=${6:-frappe_root}
     local pg_root_password=${7:-admin}
     local selected_apps=${8:-""}
+    local ssh_key_file=${9:-""}
     local compose_file="$safe_site_name/${safe_site_name}-docker-compose.yml"
 
     # DB connection details
@@ -73,7 +117,13 @@ generate_docker_compose() {
     # is never created. Pip-installing does NOT activate SQL patches (those fire only when
     # frappe_pg is added via install-app), so schema creation remains unaffected.
     if [[ "$db_type" == "postgres" ]]; then
-        app_download_cmds+='        [ ! -d "apps/frappe_pg" ] && git clone https://github.com/NileshPBrainmine/frappe_pg.git apps/frappe_pg || true
+        app_download_cmds+='        if [ -d "apps/frappe_pg" ]; then
+            echo "  Updating frappe_pg..."
+            cd apps/frappe_pg && git pull -q && cd ../..
+        else
+            echo "  Cloning frappe_pg..."
+            git clone -q https://github.com/NileshPBrainmine/frappe_pg.git apps/frappe_pg
+        fi
         ./env/bin/pip install -q -e apps/frappe_pg
         ./env/bin/pip install -q "sqlglot>=20.0.0"
 '
@@ -85,14 +135,14 @@ generate_docker_compose() {
             ui_theme)
                 app_download_cmds+='        [ ! -d "apps/ui_theme" ] && bench get-app ui_theme https://github.com/DarshanaPBrainmine/ui_theme_erpnext.git || true
 '
-                pip_install_list+=" apps/ui_theme"
+                pip_install_list+=" -e apps/ui_theme"
                 app_install_cmds+="        bench --site ${site_name} install-app ui_theme || true
 "
                 ;;
             hrms)
                 app_download_cmds+='        [ ! -d "apps/hrms" ] && bench get-app hrms https://github.com/frappe/hrms.git --branch version-15 || true
 '
-                pip_install_list+=" apps/hrms"
+                pip_install_list+=" -e apps/hrms"
                 app_install_cmds+="        echo \"Installing HRMS...\"
         bench --site ${site_name} install-app hrms || true
         echo \"Running migrate to resolve any HRMS-ERPNext table conflicts...\"
@@ -102,14 +152,14 @@ generate_docker_compose() {
             raven)
                 app_download_cmds+='        [ ! -d "apps/raven" ] && bench get-app raven https://github.com/The-Commit-Company/raven.git || true
 '
-                pip_install_list+=" apps/raven"
+                pip_install_list+=" -e apps/raven"
                 app_install_cmds+="        bench --site ${site_name} install-app raven || true
 "
                 ;;
-            custom:*)
-                local cname; cname=$(echo "$token" | cut -d: -f2)
-                local curl; curl=$(echo "$token" | cut -d: -f3)
-                local cbranch; cbranch=$(echo "$token" | cut -d: -f4)
+            'custom|'*)
+                local cname; cname=$(echo "$token" | cut -d'|' -f2)
+                local curl; curl=$(echo "$token" | cut -d'|' -f3)
+                local cbranch; cbranch=$(echo "$token" | cut -d'|' -f4)
                 if [[ -n "$cbranch" ]]; then
                     app_download_cmds+="        [ ! -d \"apps/${cname}\" ] && bench get-app ${cname} ${curl} --branch ${cbranch} || true
 "
@@ -117,7 +167,7 @@ generate_docker_compose() {
                     app_download_cmds+="        [ ! -d \"apps/${cname}\" ] && bench get-app ${cname} ${curl} || true
 "
                 fi
-                pip_install_list+=" apps/${cname}"
+                pip_install_list+=" -e apps/${cname}"
                 app_install_cmds+="        bench --site ${site_name} install-app ${cname} || true
 "
                 ;;
@@ -127,8 +177,26 @@ generate_docker_compose() {
     # Build pip install command
     local pip_install_cmd=""
     if [[ -n "$pip_install_list" ]]; then
-        pip_install_cmd="        ./env/bin/pip install -q -e${pip_install_list}
+        pip_install_cmd="        ./env/bin/pip install -q${pip_install_list}
 "
+    fi
+
+    # Build SSH setup snippet for the create-site container
+    local ssh_setup_cmd=""
+    local ssh_key_dir=""
+    local ssh_key_name=""
+    if [[ -n "$ssh_key_file" && -f "$ssh_key_file" ]]; then
+        ssh_key_name=$(basename "$ssh_key_file")
+        ssh_key_dir=$(dirname "$ssh_key_file")
+        ssh_setup_cmd='        if [ -f "/tmp/host_ssh/'"$ssh_key_name"'" ]; then
+            mkdir -p /home/frappe/.ssh
+            cp "/tmp/host_ssh/'"$ssh_key_name"'" /home/frappe/.ssh/id_ed25519
+            chmod 700 /home/frappe/.ssh
+            chmod 600 /home/frappe/.ssh/id_ed25519
+            ssh-keyscan -H github.com >> /home/frappe/.ssh/known_hosts 2>/dev/null || true
+            echo "SSH key configured for private repository access"
+        fi
+'
     fi
 
     # Traefik labels for the main app container
@@ -291,6 +359,15 @@ EOF
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
       - apps:/home/frappe/frappe-bench/apps
+EOF
+    # Mount host SSH directory read-only for private repo access
+    if [[ -n "$ssh_key_dir" ]]; then
+        cat >> "$compose_file" << EOF
+      - ${ssh_key_dir}:/tmp/host_ssh:ro
+EOF
+    fi
+
+    cat >> "$compose_file" << EOF
     entrypoint:
       - bash
       - -c
@@ -310,7 +387,149 @@ EOF
         bench set-config -g redis_queue "redis://redis:6379"
         bench set-config -g redis_socketio "redis://redis:6379"
         bench set-config -gp socketio_port 9000
-${app_download_cmds}${pip_install_cmd}
+${ssh_setup_cmd}${app_download_cmds}${pip_install_cmd}
+        cat > /tmp/patch_frappe_pg.py << 'PYEOF'
+        import os
+
+        # --- Fix database_patches.py ---
+        path = 'apps/frappe_pg/frappe_pg/postgres/database_patches.py'
+        content = open(path).read()
+        content = content.replace('self.con)', 'getattr(self, "conn", getattr(self, "con", None)))')
+
+        # --- Fix db_functions.py ---
+        df_path = 'apps/frappe_pg/frappe_pg/postgres/db_functions.py'
+        if os.path.exists(df_path):
+            df_content = open(df_path).read()
+            if 'CREATE OR REPLACE FUNCTION time(ts timestamp)' in df_content:
+                df_content = df_content.replace('"""\n    CREATE OR REPLACE FUNCTION time(ts timestamp)', '/* time(ts) omitted */\n    """')
+                print('frappe_pg: removed failing time(ts) function from db_functions.py')
+            if 'print(f"  ⚠  Warning: {str(e)[:120]}")' in df_content and 'query_peek' not in df_content:
+                df_content = df_content.replace(
+                    'print(f"  ⚠  Warning: {str(e)[:120]}")',
+                    'query_peek = sql[:100].replace("\\n", " ") + "..." if len(sql) > 100 else sql.replace("\\n", " ")\n                if _db_conn: _db_conn.rollback()\n                else: frappe.db.rollback()\n                print(f"  ⚠  Warning: {str(e)[:120]}")\n                print(f"     at query: {query_peek}")'
+                )
+                print('frappe_pg: enhanced _exec robustness in db_functions.py')
+            open(df_path, 'w').write(df_content)
+            print('frappe_pg: patched db_functions.py')
+
+        # --- Fix query_transformers.py for robust DDL protection ---
+        qt_path = 'apps/frappe_pg/frappe_pg/postgres/query_transformers.py'
+        if os.path.exists(qt_path):
+            qt_content = open(qt_path).read()
+            target = "if _FUNC_DDL_RE.search(query):"
+            if target in qt_content:
+                replacement = (
+                    "    # Check for DDL using lstrip to handle leading newlines\n"
+                    "    sq_strip = query.lstrip().lower()\n"
+                    "    if sq_strip.startswith(('create ', 'drop ', 'alter ', 'truncate ', 'grant ', 'revoke ')):\n"
+                )
+                qt_content = qt_content.replace(target, replacement)
+                open(qt_path, 'w').write(qt_content)
+                print('frappe_pg: patched query_transformers.py (DDL protection)')
+
+        # Patch A: fix patched_rollback to accept save_point= kwarg (frappe v15)
+        old_sig = 'def patched_rollback(self):'
+        new_sig = 'def patched_rollback(self, *, save_point=None):'
+        if old_sig in content and new_sig not in content:
+            content = content.replace(old_sig, new_sig)
+            old_body = (
+                '    try:\n'
+                '        return _original_rollback(self)\n'
+                '    except Exception as e:\n'
+                '        # Don\'t log rollback failures during error handling\n'
+                '        # as this can cause cascading errors\n'
+                '        pass\n'
+            )
+            new_body = (
+                '    if save_point:\n'
+                '        try:\n'
+                '            import frappe.database.database\n'
+                '            frappe.database.database.Database.sql(\n'
+                '                self, f"ROLLBACK TO SAVEPOINT {save_point}")\n'
+                '        except Exception:\n'
+                '            pass\n'
+                '        return\n'
+                '    try:\n'
+                '        return _original_rollback(self)\n'
+                '    except Exception:\n'
+                '        pass\n'
+            )
+            if old_body in content:
+                content = content.replace(old_body, new_body)
+                print('frappe_pg: patched_rollback save_point support added')
+
+        open(path, 'w').write(content)
+        content = open(path).read()
+
+        # Patch B: per-query savepoints in patched_sql
+        GUARD = '# _FRAPPE_PG_SAVEPOINT_PATCH_APPLIED_'
+        if GUARD not in content:
+            import textwrap
+            NEW_CODE = textwrap.dedent("""
+                # _FRAPPE_PG_SAVEPOINT_PATCH_APPLIED_
+                import threading as _fp_tl
+                import psycopg2.extensions as _fp_pgext
+                _fp_sp = _fp_tl.local()
+
+                def _fp_next_sp():
+                    if not hasattr(_fp_sp, "n"): _fp_sp.n = 0
+                    _fp_sp.n = (_fp_sp.n + 1) % 1000000
+                    return "frappe_pg_sp_{}".format(_fp_sp.n)
+
+                def _fp_in_txn(conn):
+                    try: return conn.status == _fp_pgext.STATUS_IN_TRANSACTION
+                    except: return False
+
+                def patched_sql(self, query, values=(), *args, **kwargs):
+                    import frappe.database.database
+                    from frappe.database.postgres.database import modify_query, modify_values as _fp_mv
+                    from frappe_pg.postgres.query_transformers import apply_all_query_transformations
+                    if isinstance(values, dict):
+                        q = query
+                        v = values
+                    else:
+                        t = apply_all_query_transformations(query)
+                        q = modify_query(t)
+                        v = _fp_mv(values)
+                        if not v: q = q.replace("%", "%%")
+                    _B = frappe.database.database.Database.sql
+                    q_up = q.strip().upper()
+                    ctrl = any(q_up.startswith(k) for k in (
+                        "BEGIN","COMMIT","ROLLBACK","SAVEPOINT","RELEASE SAVEPOINT","SET ","SET\\t"))
+                    sp = None
+                    _db_conn = getattr(self, 'conn', getattr(self, 'con', None))
+                    if not ctrl and _fp_in_txn(_db_conn):
+                        sp = _fp_next_sp()
+                        try: _B(self, "SAVEPOINT " + sp)
+                        except: sp = None
+                    try:
+                        r = _B(self, q, v, *args, **kwargs)
+                        if sp:
+                            try: _B(self, "RELEASE SAVEPOINT " + sp)
+                            except: pass
+                        return r
+                    except Exception as e:
+                        if sp:
+                            try: _B(self, "ROLLBACK TO SAVEPOINT " + sp)
+                            except:
+                                try: _original_rollback(self)
+                                except: pass
+                        elif "transaction is aborted" in str(e).lower() or "infailedsqltransaction" in str(e).lower():
+                            try: _original_rollback(self)
+                            except: pass
+                        raise
+
+                from frappe.database.postgres.database import PostgresDatabase as _fp_PGDb
+                _fp_PGDb.sql = patched_sql
+                print("frappe_pg: per-query savepoint patch applied")
+            """).lstrip("\n")
+            with open(path, 'a') as f:
+                f.write(NEW_CODE)
+            print('frappe_pg: savepoint patch appended')
+        else:
+            print('frappe_pg: savepoint patch already present')
+        PYEOF
+        python3 /tmp/patch_frappe_pg.py 2>/dev/null || true
         if [ ! -d "sites/${site_name}" ]; then
           echo "Creating new site with PostgreSQL (frappe_pg not active yet)..."
           bench new-site ${site_name} \\
@@ -344,7 +563,7 @@ EOF
         bench set-config -g redis_queue "redis://redis:6379"
         bench set-config -g redis_socketio "redis://redis:6379"
         bench set-config -gp socketio_port 9000
-${app_download_cmds}${pip_install_cmd}
+${ssh_setup_cmd}${app_download_cmds}${pip_install_cmd}
         if [ ! -d "sites/${site_name}" ]; then
           echo "Creating new site..."
           bench new-site ${site_name} \\
@@ -584,19 +803,35 @@ read -p "Install HRMS (HR & Payroll)? (y/n): " install_hrms
 read -p "Install Raven (Chat)? (y/n): " install_raven
 [[ "$install_raven" =~ ^[Yy]$ ]] && selected_apps+=" raven"
 
+has_private_repos=false
 read -p "Add a custom app? (y/n): " add_custom
-if [[ "$add_custom" =~ ^[Yy]$ ]]; then
+while [[ "$add_custom" =~ ^[Yy]$ ]]; do
     read -p "  App name: " custom_name
-    read -p "  Git URL: " custom_url
+    read -p "  Git URL (HTTPS or SSH): " custom_url
     read -p "  Branch (leave blank for default): " custom_branch
-    if [[ -n "$custom_branch" ]]; then
-        selected_apps+=" custom:${custom_name}:${custom_url}:${custom_branch}"
-    else
-        selected_apps+=" custom:${custom_name}:${custom_url}"
+    read -p "  Is this a private repository? (y/n): " is_private_repo
+    if [[ "$is_private_repo" =~ ^[Yy]$ ]]; then
+        has_private_repos=true
+        if [[ "$custom_url" =~ ^https://github\.com/ ]]; then
+            custom_url="git@github.com:${custom_url#https://github.com/}"
+            echo -e "  ${BLUE}Using SSH URL: ${custom_url}${NC}"
+        fi
     fi
-fi
+    if [[ -n "$custom_branch" ]]; then
+        selected_apps+=" custom|${custom_name}|${custom_url}|${custom_branch}"
+    else
+        selected_apps+=" custom|${custom_name}|${custom_url}"
+    fi
+    read -p "Add another custom app? (y/n): " add_custom
+done
 selected_apps="${selected_apps# }"
 echo ""
+
+# Setup SSH key if any private repos were selected
+ssh_key_file=""
+if [[ "$has_private_repos" == "true" ]]; then
+    ssh_key_file=$(setup_ssh_for_private_repos)
+fi
 
 # Create .env file
 cat > "$safe_site_name/.env" << EOF
@@ -608,7 +843,7 @@ SITES=${site_name}
 EOF
 
 # Generate docker-compose
-generate_docker_compose "$safe_site_name" "$site_name" "$use_ssl" "$db_type" "$external_pg" "$pg_root_user" "$pg_root_password" "$selected_apps"
+generate_docker_compose "$safe_site_name" "$site_name" "$use_ssl" "$db_type" "$external_pg" "$pg_root_user" "$pg_root_password" "$selected_apps" "$ssh_key_file"
 
 # Start containers
 echo -e "${GREEN}Starting your minimal Frappe/ERPNext site...${NC}"

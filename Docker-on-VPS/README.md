@@ -129,16 +129,36 @@ A team **messaging / chat** app built for ERPNext.
 
 ---
 
-### Question 7 — Custom App?
+### Question 7 — Custom Apps (one or more)
 
 ```
 Add a custom app? (y/n):
 ```
 
-Install your own Frappe app from a git repository. You will be asked for:
-- App name (e.g. `my_app`)
-- Git URL (e.g. `https://github.com/yourname/my_app`)
-- Branch name (e.g. `main` or `version-15`)
+Install your own Frappe apps from git repositories. You can add **as many as you need** — the script keeps asking until you say no.
+
+For each app you will be asked:
+
+| Prompt | Example |
+|--------|---------|
+| App name | `grand_renovations_app` |
+| Git URL (HTTPS or SSH) | `https://github.com/yourname/my_app.git` |
+| Branch (blank = default) | `main` or `version-15` |
+| Private repository? (y/n) | `y` for private, `n` for public |
+
+**Public repos** (`n`): cloned with HTTPS — no extra setup needed.
+
+**Private repos** (`y`):
+- The script converts `https://github.com/…` to `git@github.com:…` automatically
+- It checks for an existing SSH key (`~/.ssh/id_ed25519` or `~/.ssh/id_rsa`)
+- If none exists, a new key is generated at `~/.ssh/id_frappe_docker`
+- Your **public key** is displayed — add it to GitHub under **Settings → SSH and GPG keys → New SSH key**
+- Press Enter once added; the script tests the connection and proceeds
+- The key is securely mounted read-only into the setup container
+
+```
+Add another custom app? (y/n):   ← keeps asking until you say n
+```
 
 ---
 
@@ -211,7 +231,7 @@ After answering the questions, the script:
 | UI Theme | Optional | Custom branding |
 | HRMS | Optional | HR & Payroll |
 | Raven | Optional | Team chat |
-| Custom | Optional | Your own app |
+| Custom (×N) | Optional | One or more of your own apps (public or private) |
 
 ---
 
