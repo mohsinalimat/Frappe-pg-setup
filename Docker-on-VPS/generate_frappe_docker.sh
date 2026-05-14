@@ -144,6 +144,7 @@ generate_docker_compose() {
 '
                 pip_install_list+=" -e apps/hrms"
                 app_install_cmds+="        echo \"Installing HRMS...\"
+        bench --site ${site_name} set-config -p user_type_limit '{\"Employee Self Service\": 200}' || true
         bench --site ${site_name} install-app hrms || true
         echo \"Running migrate to resolve any HRMS-ERPNext table conflicts...\"
         bench --site ${site_name} migrate || true
@@ -571,7 +572,7 @@ ${ssh_setup_cmd}${app_download_cmds}${pip_install_cmd}
             --admin-password admin \\
             --db-host db --db-root-username root --db-root-password admin \\
             --install-app erpnext
-          echo "${site_name}" > sites/currentsite.txt
+          bench use ${site_name}
 ${app_install_cmds}          bench build
           bench --site ${site_name} migrate
         else
@@ -806,6 +807,8 @@ read -p "Install Raven (Chat)? (y/n): " install_raven
 has_private_repos=false
 read -p "Add a custom app? (y/n): " add_custom
 while [[ "$add_custom" =~ ^[Yy]$ ]]; do
+    echo -e "  ${YELLOW}App name must match the app's Python module name in hooks.py${NC}"
+    echo -e "  ${YELLOW}e.g. for Frappe_Assistant_Core repo the name is: frappe_assistant_core${NC}"
     read -p "  App name: " custom_name
     read -p "  Git URL (HTTPS or SSH): " custom_url
     read -p "  Branch (leave blank for default): " custom_branch
