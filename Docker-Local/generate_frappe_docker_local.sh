@@ -209,7 +209,7 @@ generate_docker_compose() {
 '
                 pip_install_list+=" -e apps/hrms"
                 app_install_cmds+="        echo \"Installing HRMS...\"
-        bench --site ${site_name} set-config -p user_type_limit '{\"Employee Self Service\": 200}' || true
+        bench --site ${site_name} set-config -p user_type_doctype_limit '{\"Employee Self Service\": 200}' || true
         bench --site ${site_name} install-app hrms || true
         echo \"Running migrate to resolve any HRMS-ERPNext table conflicts...\"
         bench --site ${site_name} migrate || true
